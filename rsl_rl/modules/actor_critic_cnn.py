@@ -14,7 +14,7 @@ from typing import Any
 from rsl_rl.networks import CNN, MLP, EmpiricalNormalization
 
 from .actor_critic import ActorCritic
-
+from ipdb import set_trace
 
 class ActorCriticCNN(ActorCritic):
     def __init__(
@@ -51,8 +51,8 @@ class ActorCriticCNN(ActorCritic):
         for obs_group in obs_groups["policy"]:
             if len(obs[obs_group].shape) == 4:  # B, C, H, W
                 self.actor_obs_groups_2d.append(obs_group)
-                actor_in_dims_2d.append(obs[obs_group].shape[2:4])
-                actor_in_channels_2d.append(obs[obs_group].shape[1])
+                actor_in_dims_2d.append(obs[obs_group].shape[2:4]) # H, W
+                actor_in_channels_2d.append(obs[obs_group].shape[1]) # C
             elif len(obs[obs_group].shape) == 2:  # B, C
                 self.actor_obs_groups_1d.append(obs_group)
                 num_actor_obs_1d += obs[obs_group].shape[-1]

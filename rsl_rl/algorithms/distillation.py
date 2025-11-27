@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent
+from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent, StudentTeacherCNN
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_optimizer
 
@@ -15,12 +15,12 @@ from rsl_rl.utils import resolve_optimizer
 class Distillation:
     """Distillation algorithm for training a student model to mimic a teacher model."""
 
-    policy: StudentTeacher | StudentTeacherRecurrent
+    policy: StudentTeacher | StudentTeacherRecurrent | StudentTeacherCNN
     """The student teacher model."""
 
     def __init__(
         self,
-        policy: StudentTeacher | StudentTeacherRecurrent,
+        policy: StudentTeacher | StudentTeacherRecurrent | StudentTeacherCNN,
         num_learning_epochs: int = 1,
         gradient_length: int = 15,
         learning_rate: float = 1e-3,
@@ -75,7 +75,7 @@ class Distillation:
 
     def init_storage(
         self,
-        training_type: str,
+        training_type: str,  # "distillation" or "rl"
         num_envs: int,
         num_transitions_per_env: int,
         obs: TensorDict,
