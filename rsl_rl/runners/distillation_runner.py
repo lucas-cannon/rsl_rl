@@ -10,6 +10,7 @@ import time
 import torch
 from collections import deque
 from tensordict import TensorDict
+import statistics
 
 import rsl_rl
 from rsl_rl.algorithms import Distillation
@@ -17,7 +18,7 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent, StudentTeacherCNN
 from rsl_rl.runners import OnPolicyRunner
 from rsl_rl.utils import resolve_obs_groups, store_code_state
-
+from ipdb import set_trace
 
 class DistillationRunner(OnPolicyRunner):
     """On-policy runner for training and evaluation of teacher-student training."""
@@ -35,7 +36,6 @@ class DistillationRunner(OnPolicyRunner):
         # Store training configuration
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
-
         # Query observations from environment for algorithm construction
         obs = self.env.get_observations()
         self.cfg["obs_groups"] = resolve_obs_groups(obs, self.cfg["obs_groups"], default_sets=["teacher"])
@@ -78,6 +78,9 @@ class DistillationRunner(OnPolicyRunner):
         lenbuffer = deque(maxlen=100)
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        # --- Best policy tracking ---
+        best_mean_reward = -float("inf")
+        best_model_path = os.path.join(self.log_dir, "best_model.pt") if self.log_dir else None
 
         # Ensure all parameters are in-synced
         if self.is_distributed:
@@ -131,6 +134,22 @@ class DistillationRunner(OnPolicyRunner):
             if self.log_dir is not None and not self.disable_logs:
                 # Log information
                 self.log(locals())
+                # -------- Save best model --------
+                if it > 200:   # avoid noise before any complete episodes
+                    
+                    mean_rew = statistics.mean(rewbuffer)
+
+                    if mean_rew > best_mean_reward:
+                        best_mean_reward = mean_rew
+                        print(
+                            f"\033[92m[Best Model] Iter {it}: mean reward improved to {mean_rew:.3f}, saving model.\033[0m"
+                        )
+                        self.save(best_model_path)
+                        # -------- Log best model info to text file --------
+                        best_log_path = os.path.join(self.log_dir, "best_policy.txt")
+                        with open(best_log_path, "a") as f:
+                            f.write(f"Iter {it}: mean_reward = {mean_rew:.6f}\n")
+
                 # Save model
                 if it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, f"model_{it}.pt"))

@@ -49,7 +49,7 @@ class StudentTeacherCNN(nn.Module):
         student_in_channels_2d = []  # C (input image channels for CNN)
         self.student_obs_groups_2d = []
 
-        set_trace()
+        
         for obs_group in obs_groups["policy"]:
             # assert len(obs[obs_group].shape) == 2, "The StudentTeacher module only supports 1D observations."
             # num_student_obs += obs[obs_group].shape[-1]

@@ -24,7 +24,6 @@ from rsl_rl.modules import (
     resolve_symmetry_config,
 )
 from rsl_rl.utils import resolve_obs_groups, store_code_state
-from ipdb import set_trace
 
 class OnPolicyRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
@@ -48,6 +47,7 @@ class OnPolicyRunner:
         default_sets = ["critic"]
         if "rnd_cfg" in self.alg_cfg and self.alg_cfg["rnd_cfg"] is not None:
             default_sets.append("rnd_state")
+        
         self.cfg["obs_groups"] = resolve_obs_groups(obs, self.cfg["obs_groups"], default_sets)
 
         # Create the algorithm
