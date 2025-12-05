@@ -220,7 +220,7 @@ class ActorCriticCNN(ActorCritic):
             cnn_enc = torch.cat(cnn_enc_list, dim=-1)
             # Concatenate to the MLP observations
             mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
-
+        # set_trace()
         if self.state_dependent_std:
             return self.actor(mlp_obs)[..., 0, :]
         else:

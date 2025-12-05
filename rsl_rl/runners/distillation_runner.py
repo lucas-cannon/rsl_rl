@@ -80,6 +80,7 @@ class DistillationRunner(OnPolicyRunner):
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         # --- Best policy tracking ---
         best_mean_reward = -float("inf")
+        best_bc_loss = float("inf")  
         best_model_path = os.path.join(self.log_dir, "best_model.pt") if self.log_dir else None
 
         # Ensure all parameters are in-synced
@@ -134,23 +135,37 @@ class DistillationRunner(OnPolicyRunner):
             if self.log_dir is not None and not self.disable_logs:
                 # Log information
                 self.log(locals())
-                # -------- Save best model --------
-                if it > 200:   # avoid noise before any complete episodes
-                    
-                    mean_rew = statistics.mean(rewbuffer)
 
-                    if mean_rew > best_mean_reward:
-                        best_mean_reward = mean_rew
+                # ========== Distillation mode: track BC loss ==========
+                # set_trace()
+                if "behavior" in loss_dict:
+                    bc_loss = float(loss_dict["behavior"])
+
+                    if bc_loss < best_bc_loss:
+                        best_bc_loss = bc_loss
                         print(
-                            f"\033[92m[Best Model] Iter {it}: mean reward improved to {mean_rew:.3f}, saving model.\033[0m"
+                            f"\033[92m[Best Model] Iter {it}: bc_loss improved to {bc_loss:.6f}, saving model.\033[0m"
                         )
                         self.save(best_model_path)
-                        # -------- Log best model info to text file --------
+
+                        # Write to logging text file
                         best_log_path = os.path.join(self.log_dir, "best_policy.txt")
                         with open(best_log_path, "a") as f:
-                            f.write(f"Iter {it}: mean_reward = {mean_rew:.6f}\n")
+                            f.write(f"Iter {it}: bc_loss = {bc_loss:.6f}\n")
 
-                # Save model
+                # ========== PPO mode: track reward ==========
+                else:
+                    if it > 200:  # avoid noise in early iterations
+                        mean_rew = statistics.mean(rewbuffer)
+
+                        if mean_rew > best_mean_reward:
+                            best_mean_reward = mean_rew
+                            print(
+                                f"\033[92m[Best Model] Iter {it}: mean reward improved to {mean_rew:.3f}, saving model.\033[0m"
+                            )
+                            self.save(best_model_path)
+
+                # Save every N iterations
                 if it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
 

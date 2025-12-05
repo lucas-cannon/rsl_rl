@@ -255,6 +255,7 @@ class StudentTeacherCNN(nn.Module):
                 :class:`OnPolicyRunner` to determine how to load further parameters.
         """
         # Check if state_dict contains teacher and student or just teacher parameters
+        # set_trace()
         if any("actor" in key for key in state_dict):  # Load parameters from rl training
             # Rename keys to match teacher and remove critic parameters
             teacher_state_dict = {}
@@ -264,6 +265,7 @@ class StudentTeacherCNN(nn.Module):
                     teacher_state_dict[key.replace("actor.", "")] = value
                 if "actor_obs_normalizer." in key:
                     teacher_obs_normalizer_state_dict[key.replace("actor_obs_normalizer.", "")] = value
+            
             self.teacher.load_state_dict(teacher_state_dict, strict=strict)
             self.teacher_obs_normalizer.load_state_dict(teacher_obs_normalizer_state_dict, strict=strict)
             # Set flag for successfully loading the parameters

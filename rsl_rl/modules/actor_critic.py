@@ -12,7 +12,7 @@ from torch.distributions import Normal
 from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
-
+from ipdb import set_trace
 
 class ActorCritic(nn.Module):
     is_recurrent: bool = False
@@ -153,6 +153,7 @@ class ActorCritic(nn.Module):
     def act_inference(self, obs: TensorDict) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
+        # set_trace()
         if self.state_dependent_std:
             return self.actor(obs)[..., 0, :]
         else:
@@ -183,16 +184,60 @@ class ActorCritic(nn.Module):
             self.critic_obs_normalizer.update(critic_obs)
 
     def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
-        """Load the parameters of the actor-critic model.
-
-        Args:
-            state_dict: State dictionary of the model.
-            strict: Whether to strictly enforce that the keys in `state_dict` match the keys returned by this module's
-                :meth:`state_dict` function.
-
-        Returns:
-            Whether this training resumes a previous training. This flag is used by the :func:`load` function of
-                :class:`OnPolicyRunner` to determine how to load further parameters (relevant for, e.g., distillation).
         """
-        super().load_state_dict(state_dict, strict=strict)
-        return True
+        Returns:
+            True  -> resume PPO training (actor + critic present)
+            False -> student-only checkpoint (actor loaded, critic missing)
+        """
+        keys = list(state_dict.keys())
+
+        #######################################################################
+        # CASE 1 — Distillation student checkpoint (student.*, student_cnns.*)
+        #######################################################################
+        if any(k.startswith("student.") for k in keys) or any(k.startswith("student_cnns.") for k in keys):
+            print("[ActorCritic] Distillation checkpoint detected → loading student into actor only")
+
+            new_sd = {}
+
+            for k, v in state_dict.items():
+                # CNN remapping
+                if k.startswith("student_cnns."):
+                    new_sd[k.replace("student_cnns.", "actor_cnns.")] = v
+                    continue
+
+                # MLP remapping
+                if k.startswith("student."):
+                    new_sd[k.replace("student.", "actor.")] = v
+                    continue
+
+                # Noise parameters
+                if k in ("std", "log_std"):
+                    new_sd[k] = v
+
+            # Load only the actor parameters
+            super().load_state_dict(new_sd, strict=False)
+
+            print("[ActorCritic] Loaded student policy → critic intentionally NOT loaded.")
+            return False      # <<< IMPORTANT: tells PPO NOT to load optimizer
+
+        #######################################################################
+        # CASE 2 — PPO checkpoint (actor.*, critic.*)
+        #######################################################################
+        if any(k.startswith("actor.") for k in keys) and any(k.startswith("critic.") for k in keys):
+            print("[ActorCritic] PPO checkpoint detected → loading actor + critic")
+            super().load_state_dict(state_dict, strict=strict)
+            return True       # resume PPO normally
+
+        #######################################################################
+        # CASE 3 — Actor-only PPO checkpoint (rare but possible)
+        #######################################################################
+        if any(k.startswith("actor.") for k in keys) and not any(k.startswith("critic.") for k in keys):
+            print("[ActorCritic] WARNING: actor-only checkpoint loaded → critic reset")
+            super().load_state_dict(state_dict, strict=False)
+            return False      # new critic → new optimizer
+
+        #######################################################################
+        # CASE 4 — Unrecognized checkpoint
+        #######################################################################
+        raise RuntimeError("Unrecognized checkpoint format. Keys: " + str(keys[:20]))
+
