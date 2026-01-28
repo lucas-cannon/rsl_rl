@@ -14,10 +14,6 @@ from collections import deque
 from tensordict import TensorDict
 from pathlib import Path
 
-codesign_task_path = r"C:\Users\tajac\OneDrive - University of Bristol\PhD\Software\RL\Tactile_Lab\source\Tactile_Lab\Tactile_Lab\tasks\direct\obj_push_codesign"
-import sys
-sys.path.append(codesign_task_path)
-
 import rsl_rl
 from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
@@ -30,7 +26,18 @@ from rsl_rl.modules import (
 )
 from rsl_rl.utils import resolve_obs_groups, store_code_state
 
-from codesign_toolkit import TacTipSkinMorphologyGenerator as skin_gen
+import isaaclab.sim as sim_utils
+
+import Tactile_Lab
+from Tactile_Lab.tactile_lab_assets.tactile_lab_assets.robots.tg3_ur5 import (
+    ASSET_ROOT,
+    UR5_RA_TACTIP_CFG,
+    make_ur5_tactip_cfg,
+)  # isort:skip
+from Tactile_Lab.tasks.direct.obj_push_codesign.codesign_toolkit import TacTipSkinMorphologyGenerator as skin_gen
+from Tactile_Lab.tasks.direct.obj_push_codesign.codesign_toolkit.TacTipSkinMorphologyGenerator import (
+    CODESIGN_TOOLKIT_DIR,
+)
 
 class OnPolicyCoDesignRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
@@ -470,7 +477,7 @@ class OnPolicyCoDesignRunner:
     
     def generate_morphology(self):
 
-        output_dir = Path(codesign_task_path).joinpath("codesign_toolkit/Codesign_Assets/GeneratedAssets")
+        output_dir = Path(CODESIGN_TOOLKIT_DIR).joinpath("Codesign_Assets/GeneratedAssets")
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Clear any existing files in the demo output folder
@@ -522,6 +529,26 @@ class OnPolicyCoDesignRunner:
         stl_core_generator.generate(str(stl_core_path), outer_inset=0.0012, thickness=0.002)
 
         print(f"Generated Skin and Core with Parameters: {profile_params}")
+
+        # UR5_RA_CODESIGN_TACTIP_CFG = make_ur5_tactip_cfg(
+        #     os.path.join(ASSET_ROOT, "Robots/tg3_asset/right_angle_tactip.usd"),
+        #     activate_contact_sensors=True
+        # )
+        
+        # UR5_RA_CODESIGN_TACTIP_CFG = UR5_RA_CODESIGN_TACTIP_CFG.replace(
+        #     prim_path=f"/World/envs/env_.*/Robot",
+        #     spawn=UR5_RA_CODESIGN_TACTIP_CFG.spawn.replace(
+        #         collision_props=sim_utils.CollisionPropertiesCfg(
+        #             collision_enabled=False  # disable this does not work for entire arms, only work for the root link
+        #         )
+        #     ),
+        #     init_state=UR5_RA_CODESIGN_TACTIP_CFG.init_state.replace(
+        #         joint_pos=initial_joint_positions,  # replace the init_state inside the config
+        #         pos=robot_base_in_scene_frame[0:3],
+        #     ),
+        # )
+
+        # codesign_robot_cfg = UR5_RA_CODESIGN_TACTIP_CFG
 
     def _prepare_logging_writer(self) -> None:
         """Prepare the logging writers."""
