@@ -12,6 +12,11 @@ import torch
 import warnings
 from collections import deque
 from tensordict import TensorDict
+from pathlib import Path
+
+codesign_task_path = r"C:\Users\tajac\OneDrive - University of Bristol\PhD\Software\RL\Tactile_Lab\source\Tactile_Lab\Tactile_Lab\tasks\direct\obj_push_codesign"
+import sys
+sys.path.append(codesign_task_path)
 
 import rsl_rl
 from rsl_rl.algorithms import PPO
@@ -24,6 +29,8 @@ from rsl_rl.modules import (
     resolve_symmetry_config,
 )
 from rsl_rl.utils import resolve_obs_groups, store_code_state
+
+from codesign_toolkit import TacTipSkinMorphologyGenerator as skin_gen
 
 class OnPolicyCoDesignRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
@@ -152,9 +159,12 @@ class OnPolicyCoDesignRunner:
 
                 # Compute returns
                 self.alg.compute_returns(obs)
-
+            
             # Update policy
             loss_dict = self.alg.update()
+
+            # Update morphology
+            self.generate_morphology()
 
             stop = time.time()
             learn_time = stop - start
@@ -457,6 +467,61 @@ class OnPolicyCoDesignRunner:
         )
 
         return alg
+    
+    def generate_morphology(self):
+
+        output_dir = Path(codesign_task_path).joinpath("codesign_toolkit/Codesign_Assets/GeneratedAssets")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Clear any existing files in the demo output folder
+        for child in output_dir.iterdir():
+            if child.is_file() or child.is_symlink():
+                child.unlink()
+
+        stl_skin_path = output_dir / "skin.stl"
+        stl_core_path = output_dir / "core.stl"
+
+        # Explicitly set mesh resolution via segments and rings
+        segments = 64
+        rings = 32
+
+        # Normalised shape parameters in [0, 1]. These are mapped inside layered_circle_profile to:
+        #   base_sphere_centre_z_offset: [-0.1, 0.01] - non-linear mapping applied to 0-1 range value (^(1/3))
+        #   concave/convex_dimple_diameter: [0.0, 0.039] - linear mapping applied to 0-1 range value
+        #	concave/convex dimple depth/height limits are defined by 0 and the lowest value between dimple diameter/2 and the available height before intersecting the base. linear mapping applied to 0-1 range value
+        base_sphere_centre_z_offset = 1
+        concave_dimple_diameter = 1
+        convex_dimple_diameter = 0.5
+        concave_dimple_depth_scale = 1
+        convex_dimple_height_scale = 1
+
+        profile_params = (
+            base_sphere_centre_z_offset,
+            concave_dimple_diameter,
+            convex_dimple_diameter,
+            concave_dimple_depth_scale,
+            convex_dimple_height_scale,
+        )  # layered_circle_profile normalised params
+
+        stl_skin_generator = skin_gen.SkinSTLGenerator(
+            segments=segments,
+            rings=rings,
+            profile_params=profile_params,
+        )
+
+        # Generate skin with a single inset layer for reference
+        stl_skin_generator.generate(str(stl_skin_path), inset_distance=0.0002)
+
+        # Generate closed core between two inset domes
+        stl_core_generator = skin_gen.CoreSTLGenerator(
+            segments=segments,
+            rings=rings,
+            profile_params=profile_params,
+        )
+
+        stl_core_generator.generate(str(stl_core_path), outer_inset=0.0012, thickness=0.002)
+
+        print(f"Generated Skin and Core with Parameters: {profile_params}")
 
     def _prepare_logging_writer(self) -> None:
         """Prepare the logging writers."""
