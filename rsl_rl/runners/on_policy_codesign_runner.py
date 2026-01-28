@@ -26,6 +26,11 @@ from rsl_rl.modules import (
 )
 from rsl_rl.utils import resolve_obs_groups, store_code_state
 
+import pandas as pd
+import numpy  as np
+from hebo.design_space.design_space import DesignSpace
+from hebo.optimizers.hebo import HEBO
+
 import isaaclab.sim as sim_utils
 
 import Tactile_Lab
@@ -78,6 +83,17 @@ class OnPolicyCoDesignRunner:
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
+
+        # Initialise Co-Design components
+        profile_params = [
+            {'name' : 'base_sphere_centre_z_offset', 'type' : 'num', 'lb' : 0, 'ub' : 1},
+            {'name' : 'concave_dimple_diameter',  'type' : 'num', 'lb' : 0, 'ub' : 1},
+            {'name' : 'convex_dimple_diameter', 'type' : 'num', 'lb' : 0, 'ub' : 1},
+            {'name' : 'concave_dimple_depth_scale', 'type' : 'num', 'lb' : 0, 'ub' : 1},
+            {'name' : 'convex_dimple_height_scale', 'type' : 'num', 'lb' : 0, 'ub' : 1}
+        ]
+
+        space = DesignSpace().parse(profile_params)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # Initialize writer
@@ -170,9 +186,6 @@ class OnPolicyCoDesignRunner:
             # Update policy
             loss_dict = self.alg.update()
 
-            # Update morphology
-            self.generate_morphology()
-
             stop = time.time()
             learn_time = stop - start
             self.current_learning_iteration = it
@@ -181,9 +194,14 @@ class OnPolicyCoDesignRunner:
                 # Log information
                 self.log(locals())
                 # -------- Save best model --------
-                if it > 200:   # (should be changed back to >200 after development) avoid noise before any complete episodes
+                if it > 200:   # avoid noise before any complete episodes
                     
                     mean_rew = statistics.mean(rewbuffer)
+
+                    print(mean_rew)
+
+                    # Update morphology after initial noisy policy learning phase
+                    self.generate_morphology()
 
                     if mean_rew > best_mean_reward:
                         best_mean_reward = mean_rew
