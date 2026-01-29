@@ -210,8 +210,8 @@ class OnPolicyCoDesignRunner:
                         with open(current_params_path, "w", encoding="utf-8") as f:
                             json.dump(params_dict, f, indent=2)
 
-                        with torch.inference_mode():
-                            self.env.reset()
+                        # with torch.inference_mode():
+                        #     self.env.reset()
 
                         print(f"[Iter {it}] Updated co-design parameters to {params_dict}, saved to {current_params_path}, reset all environments.")
 
