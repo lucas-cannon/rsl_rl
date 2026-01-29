@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import statistics
 import time
@@ -33,16 +34,17 @@ from hebo.optimizers.hebo import HEBO
 
 import isaaclab.sim as sim_utils
 
-import Tactile_Lab
-from Tactile_Lab.tactile_lab_assets.tactile_lab_assets.robots.tg3_ur5 import (
-    ASSET_ROOT,
-    UR5_RA_TACTIP_CFG,
-    make_ur5_tactip_cfg,
-)  # isort:skip
-from Tactile_Lab.tasks.direct.obj_push_codesign.codesign_toolkit import TacTipSkinMorphologyGenerator as skin_gen
-from Tactile_Lab.tasks.direct.obj_push_codesign.codesign_toolkit.TacTipSkinMorphologyGenerator import (
-    CODESIGN_TOOLKIT_DIR,
-)
+# # import Tactile_Lab
+# # from Tactile_Lab.tactile_lab_assets.tactile_lab_assets.robots.tg3_ur5 import (
+# #     ASSET_ROOT,
+# #     UR5_RA_TACTIP_CFG,
+# #     make_ur5_tactip_cfg,
+# # )  # isort:skip
+# # from Tactile_Lab.tasks.direct.obj_push_codesign.codesign_toolkit import TacTipSkinMorphologyGenerator as skin_gen
+# # from Tactile_Lab.tasks.direct.obj_push_codesign.codesign_toolkit.TacTipSkinMorphologyGenerator import (
+# #     CODESIGN_TOOLKIT_DIR,
+# # )
+# from Tactile_Lab.tasks.direct.obj_push_codesign.obj_push_codesign_env_cfg import generate_morphology
 
 class OnPolicyCoDesignRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
@@ -84,16 +86,19 @@ class OnPolicyCoDesignRunner:
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
-        # Initialise Co-Design components
-        profile_params = [
-            {'name' : 'base_sphere_centre_z_offset', 'type' : 'num', 'lb' : 0, 'ub' : 1},
+        #profile parameters and USD are initialised in the codesign task config file so that they are always available for setup scene
+
+        # Initialise Co-Design parameter optimizer
+        hebo_params = [
+            {'name' : 'base_sphere_centre_z_offset', 'type' : 'num', 'lb' : 0,  'ub' : 1},
             {'name' : 'concave_dimple_diameter',  'type' : 'num', 'lb' : 0, 'ub' : 1},
             {'name' : 'convex_dimple_diameter', 'type' : 'num', 'lb' : 0, 'ub' : 1},
             {'name' : 'concave_dimple_depth_scale', 'type' : 'num', 'lb' : 0, 'ub' : 1},
             {'name' : 'convex_dimple_height_scale', 'type' : 'num', 'lb' : 0, 'ub' : 1}
         ]
 
-        space = DesignSpace().parse(profile_params)
+        space = DesignSpace().parse(hebo_params)
+        opt = HEBO(space)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # Initialize writer
@@ -194,14 +199,16 @@ class OnPolicyCoDesignRunner:
                 # Log information
                 self.log(locals())
                 # -------- Save best model --------
-                if it > 200:   # avoid noise before any complete episodes
+                if it > 40:   # (200) avoid noise before any complete episodes
                     
                     mean_rew = statistics.mean(rewbuffer)
 
                     print(mean_rew)
 
+                    # opt.observe(rec_params,mean_rew)
+
                     # Update morphology after initial noisy policy learning phase
-                    self.generate_morphology()
+                    #generate_morphology()
 
                     if mean_rew > best_mean_reward:
                         best_mean_reward = mean_rew
@@ -492,81 +499,6 @@ class OnPolicyCoDesignRunner:
         )
 
         return alg
-    
-    def generate_morphology(self):
-
-        output_dir = Path(CODESIGN_TOOLKIT_DIR).joinpath("Codesign_Assets/GeneratedAssets")
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Clear any existing files in the demo output folder
-        for child in output_dir.iterdir():
-            if child.is_file() or child.is_symlink():
-                child.unlink()
-
-        stl_skin_path = output_dir / "skin.stl"
-        stl_core_path = output_dir / "core.stl"
-
-        # Explicitly set mesh resolution via segments and rings
-        segments = 64
-        rings = 32
-
-        # Normalised shape parameters in [0, 1]. These are mapped inside layered_circle_profile to:
-        #   base_sphere_centre_z_offset: [-0.1, 0.01] - non-linear mapping applied to 0-1 range value (^(1/3))
-        #   concave/convex_dimple_diameter: [0.0, 0.039] - linear mapping applied to 0-1 range value
-        #	concave/convex dimple depth/height limits are defined by 0 and the lowest value between dimple diameter/2 and the available height before intersecting the base. linear mapping applied to 0-1 range value
-        base_sphere_centre_z_offset = 1
-        concave_dimple_diameter = 1
-        convex_dimple_diameter = 0.5
-        concave_dimple_depth_scale = 1
-        convex_dimple_height_scale = 1
-
-        profile_params = (
-            base_sphere_centre_z_offset,
-            concave_dimple_diameter,
-            convex_dimple_diameter,
-            concave_dimple_depth_scale,
-            convex_dimple_height_scale,
-        )  # layered_circle_profile normalised params
-
-        stl_skin_generator = skin_gen.SkinSTLGenerator(
-            segments=segments,
-            rings=rings,
-            profile_params=profile_params,
-        )
-
-        # Generate skin with a single inset layer for reference
-        stl_skin_generator.generate(str(stl_skin_path), inset_distance=0.0002)
-
-        # Generate closed core between two inset domes
-        stl_core_generator = skin_gen.CoreSTLGenerator(
-            segments=segments,
-            rings=rings,
-            profile_params=profile_params,
-        )
-
-        stl_core_generator.generate(str(stl_core_path), outer_inset=0.0012, thickness=0.002)
-
-        print(f"Generated Skin and Core with Parameters: {profile_params}")
-
-        # UR5_RA_CODESIGN_TACTIP_CFG = make_ur5_tactip_cfg(
-        #     os.path.join(ASSET_ROOT, "Robots/tg3_asset/right_angle_tactip.usd"),
-        #     activate_contact_sensors=True
-        # )
-        
-        # UR5_RA_CODESIGN_TACTIP_CFG = UR5_RA_CODESIGN_TACTIP_CFG.replace(
-        #     prim_path=f"/World/envs/env_.*/Robot",
-        #     spawn=UR5_RA_CODESIGN_TACTIP_CFG.spawn.replace(
-        #         collision_props=sim_utils.CollisionPropertiesCfg(
-        #             collision_enabled=False  # disable this does not work for entire arms, only work for the root link
-        #         )
-        #     ),
-        #     init_state=UR5_RA_CODESIGN_TACTIP_CFG.init_state.replace(
-        #         joint_pos=initial_joint_positions,  # replace the init_state inside the config
-        #         pos=robot_base_in_scene_frame[0:3],
-        #     ),
-        # )
-
-        # codesign_robot_cfg = UR5_RA_CODESIGN_TACTIP_CFG
 
     def _prepare_logging_writer(self) -> None:
         """Prepare the logging writers."""
