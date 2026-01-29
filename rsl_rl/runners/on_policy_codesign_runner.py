@@ -34,17 +34,7 @@ from hebo.optimizers.hebo import HEBO
 
 import isaaclab.sim as sim_utils
 
-# # import Tactile_Lab
-# # from Tactile_Lab.tactile_lab_assets.tactile_lab_assets.robots.tg3_ur5 import (
-# #     ASSET_ROOT,
-# #     UR5_RA_TACTIP_CFG,
-# #     make_ur5_tactip_cfg,
-# # )  # isort:skip
-# # from Tactile_Lab.tasks.direct.obj_push_codesign.codesign_toolkit import TacTipSkinMorphologyGenerator as skin_gen
-# # from Tactile_Lab.tasks.direct.obj_push_codesign.codesign_toolkit.TacTipSkinMorphologyGenerator import (
-# #     CODESIGN_TOOLKIT_DIR,
-# # )
-# from Tactile_Lab.tasks.direct.obj_push_codesign.obj_push_codesign_env_cfg import generate_morphology
+from Tactile_Lab.tasks.direct.obj_push_codesign.obj_push_codesign_env import current_params_path
 
 class OnPolicyCoDesignRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
@@ -203,12 +193,27 @@ class OnPolicyCoDesignRunner:
                     
                     mean_rew = statistics.mean(rewbuffer)
 
-                    print(mean_rew)
+                    # CODESIGN PARAMETER UPDATE LOGIC
+                    if it % 10 == 0:
 
-                    # opt.observe(rec_params,mean_rew)
+                        # opt.observe(rec_params,mean_rew)
 
-                    # Update morphology after initial noisy policy learning phase
-                    #generate_morphology()
+                        # Update morphology parameters initial noisy policy learning phase
+                        params_dict = {
+                            "base_sphere_centre_z_offset": float(0.6),
+                            "concave_dimple_diameter": float(1.0),
+                            "convex_dimple_diameter": float(0.50),
+                            "concave_dimple_depth_scale": float(1.0),
+                            "convex_dimple_height_scale": float(0.50),
+                        }
+
+                        with open(current_params_path, "w", encoding="utf-8") as f:
+                            json.dump(params_dict, f, indent=2)
+
+                        with torch.inference_mode():
+                            self.env.reset()
+
+                        print(f"[Iter {it}] Updated co-design parameters to {params_dict}, saved to {current_params_path}, reset all environments.")
 
                     if mean_rew > best_mean_reward:
                         best_mean_reward = mean_rew
