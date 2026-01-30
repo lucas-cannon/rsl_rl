@@ -212,6 +212,7 @@ class OnPolicyCoDesignRunner:
 
                         with torch.inference_mode():
                             self.env.reset()
+                            self.env.overhaul_robot_prims()
 
                         print(f"[Iter {it}] Updated co-design parameters to {params_dict}, saved to {current_params_path}, reset all environments.")
 
