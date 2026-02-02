@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import statistics
 import time
@@ -13,7 +12,6 @@ import torch
 import warnings
 from collections import deque
 from tensordict import TensorDict
-from pathlib import Path
 
 import rsl_rl
 from rsl_rl.algorithms import PPO
@@ -26,15 +24,6 @@ from rsl_rl.modules import (
     resolve_symmetry_config,
 )
 from rsl_rl.utils import resolve_obs_groups, store_code_state
-
-import pandas as pd
-import numpy  as np
-from hebo.design_space.design_space import DesignSpace
-from hebo.optimizers.hebo import HEBO
-
-import isaaclab.sim as sim_utils
-
-from Tactile_Lab.tasks.direct.obj_push_codesign.obj_push_codesign_env import current_params_path
 
 class OnPolicyCoDesignRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
@@ -75,20 +64,6 @@ class OnPolicyCoDesignRunner:
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
-
-        #profile parameters and USD are initialised in the codesign task config file so that they are always available for setup scene
-
-        # Initialise Co-Design parameter optimizer
-        hebo_params = [
-            {'name' : 'base_sphere_centre_z_offset', 'type' : 'num', 'lb' : 0,  'ub' : 1},
-            {'name' : 'concave_dimple_diameter',  'type' : 'num', 'lb' : 0, 'ub' : 1},
-            {'name' : 'convex_dimple_diameter', 'type' : 'num', 'lb' : 0, 'ub' : 1},
-            {'name' : 'concave_dimple_depth_scale', 'type' : 'num', 'lb' : 0, 'ub' : 1},
-            {'name' : 'convex_dimple_height_scale', 'type' : 'num', 'lb' : 0, 'ub' : 1}
-        ]
-
-        space = DesignSpace().parse(hebo_params)
-        opt = HEBO(space)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         # Initialize writer
@@ -193,24 +168,10 @@ class OnPolicyCoDesignRunner:
                     
                     mean_rew = statistics.mean(rewbuffer)
 
-                    # CODESIGN PARAMETER UPDATE LOGIC
-                    if it % 10 == 0:
+                    # # CODESIGN PARAMETER UPDATE LOGIC
+                    # if it % 10 == 0:
 
-                        # opt.observe(rec_params,mean_rew)
-
-                        # Update morphology parameters initial noisy policy learning phase
-                        params_dict = {
-                            "base_sphere_centre_z_offset": float(0.6),
-                            "concave_dimple_diameter": float(1.0),
-                            "convex_dimple_diameter": float(0.50),
-                            "concave_dimple_depth_scale": float(1.0),
-                            "convex_dimple_height_scale": float(0.50),
-                        }
-
-                        with open(current_params_path, "w", encoding="utf-8") as f:
-                            json.dump(params_dict, f, indent=2)
-
-                        print(f"[Iter {it}] Updated co-design parameters to {params_dict}, saved to {current_params_path}, reset all environments.")
+                    #     # opt.observe(rec_params,mean_rew)
 
                     if mean_rew > best_mean_reward:
                         best_mean_reward = mean_rew
