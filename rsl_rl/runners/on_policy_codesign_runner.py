@@ -12,6 +12,8 @@ import torch
 import warnings
 from collections import deque
 from tensordict import TensorDict
+import json
+import pathlib as Path
 
 import rsl_rl
 from rsl_rl.algorithms import PPO
@@ -24,6 +26,13 @@ from rsl_rl.modules import (
     resolve_symmetry_config,
 )
 from rsl_rl.utils import resolve_obs_groups, store_code_state
+
+import Tactile_Lab
+from pathlib import Path  # instead of `import pathlib as Path`
+
+TACTILE_LAB_SRC = Path(Tactile_Lab.__file__).resolve().parent
+_PARAMS_DIR = Path(TACTILE_LAB_SRC).joinpath("tasks/direct/obj_push_codesign/codesign_toolkit/Codesign_Assets/params")
+params_path = _PARAMS_DIR.joinpath("current_params.json")
 
 class OnPolicyCoDesignRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
@@ -65,7 +74,7 @@ class OnPolicyCoDesignRunner:
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
+    def learn(self, num_learning_iterations: int, hardware_iteration: int, init_at_random_ep_len: bool = False) -> None:
         # Initialize writer
         self._prepare_logging_writer()
 
@@ -163,26 +172,43 @@ class OnPolicyCoDesignRunner:
             if self.log_dir is not None and not self.disable_logs:
                 # Log information
                 self.log(locals())
+
+                print(f"logging hardware iteration: {hardware_iteration}")
+
+                # only need to do this (below) once per hardware_it
+
+                with open(params_path, "r", encoding="utf-8") as f:
+                    params = json.load(f)
+
+                param_1 = float(params["base_sphere_centre_z_offset"])
+                param_2 = float(params["concave_dimple_diameter"])
+                param_3 = float(params["convex_dimple_diameter"])
+                param_4 = float(params["concave_dimple_depth_scale"])
+                param_5 = float(params["convex_dimple_height_scale"])
+
+                params_dict = {
+                    "base_sphere_centre_z_offset": float(param_1),
+                    "concave_dimple_diameter": float(param_2),
+                    "convex_dimple_diameter": float(param_3),
+                    "concave_dimple_depth_scale": float(param_4),
+                    "convex_dimple_height_scale": float(param_5),
+                }
+
                 # -------- Save best model --------
                 if it > 40:   # (200) avoid noise before any complete episodes
                     
                     mean_rew = statistics.mean(rewbuffer)
-
-                    # # CODESIGN PARAMETER UPDATE LOGIC
-                    # if it % 10 == 0:
-
-                    #     # opt.observe(rec_params,mean_rew)
 
                     if mean_rew > best_mean_reward:
                         best_mean_reward = mean_rew
                         print(
                             f"\033[92m[Best Model] Iter {it}: mean reward improved to {mean_rew:.3f}, saving model.\033[0m"
                         )
-                        self.save(best_model_path)
+                        self.save(best_model_path, hardware_iteration, params_dict)
                         # -------- Log best model info to text file --------
                         best_log_path = os.path.join(self.log_dir, "best_policy_plus_design_params.txt")
                         with open(best_log_path, "a") as f:
-                            f.write(f"Iter {it}: mean_reward = {mean_rew:.6f}\n")
+                            f.write(f"Iter {it}: mean_reward = {mean_rew:.6f}\n Hardware Iteration = {hardware_iteration}\n Hardware Params = {params_dict}")
 
                 # Save model
                 if it % self.save_interval == 0:
@@ -318,12 +344,14 @@ class OnPolicyCoDesignRunner:
         )
         print(log_string)
 
-    def save(self, path: str, infos: dict | None = None) -> None:
+    def save(self, path: str, hardware_iteration: int = 0, current_params_dict: dict | None = None, infos: dict | None = None) -> None:
         # Save model
         saved_dict = {
             "model_state_dict": self.alg.policy.state_dict(),
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
+            "hardware_iteration": hardware_iteration,
+            "hardware_params": current_params_dict,
             "infos": infos,
         }
         # Save RND model if used
