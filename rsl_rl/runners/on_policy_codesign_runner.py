@@ -179,6 +179,7 @@ class OnPolicyCoDesignRunner:
         else:
             start_iter = self.current_learning_iteration + 1  # continue from last iteration
         tot_iter = start_iter + num_learning_iterations - 1
+
         for it in range(start_iter, tot_iter + 1):
             start = time.time()
             # Rollout
@@ -231,62 +232,70 @@ class OnPolicyCoDesignRunner:
                 # Compute returns
                 self.alg.compute_returns(obs)
             
+            # Given that our hardware iterations are short (W.R.T. typical RL training), we ignore the first episode reward(s) after a task reset to avoid invalid/biased data due to environment reset.
             if len(cur_rewbuffer) > skip_episodes-1:
+
                 # Update policy
                 loss_dict = self.alg.update()
 
-            stop = time.time()
-            learn_time = stop - start
-            self.current_learning_iteration = it
+                stop = time.time()
+                learn_time = stop - start
+                self.current_learning_iteration = it
 
-            if self.log_dir is not None and not self.disable_logs:
-                # Log information
-                self.log(locals())
+                if self.log_dir is not None and not self.disable_logs:
 
-                print(f"logging hardware iteration: {hardware_iteration}")
+                    # Log information
+                    # if len(cur_rewbuffer) > skip_episodes-1:
+                    self.log(locals())
 
-                # only need to do this (below) once per hardware_it
+                    print(f"logging hardware iteration: {hardware_iteration}")
 
-                # -------- Save best model --------
-                if hardware_iteration > 0 and len(rewbuffer) > 0:   # no best model in first hardware iteration to avoid noise before any complete episodes and ensure >1 episode is completed in the set
-                    
-                    mean_rew = statistics.mean(rewbuffer)
+                    # only need to do this (below) once per hardware_it
 
-                    if mean_rew > best_mean_reward:
-                        best_mean_reward = mean_rew
-                        print(
-                            f"\033[92m[Best Model] Iter {it}: mean reward improved to {mean_rew:.3f}, saving model.\033[0m"
-                        )
-                        self.save(best_model_path, hardware_iteration, params_dict)
-                        # -------- Log best model info to text file --------
-                        best_log_path = os.path.join(self.log_dir, "best_policy_plus_design_params.txt")
-                        with open(best_log_path, "w") as f:
-                            f.write(f"Iter {it}: mean_reward = {mean_rew:.6f}\n Hardware Iteration = {hardware_iteration}\n Hardware Params = {params_dict}")
-
-                        params_dict_with_it_details = {
-                            "policy_iteration": it,
-                            "current_best_mean_reward": float(mean_rew),
-                            "hardware_iteration": hardware_iteration,
-                            "base_sphere_centre_z_offset": float(params["base_sphere_centre_z_offset"]),
-                            "concave_dimple_diameter": float(params["concave_dimple_diameter"]),
-                            "convex_dimple_diameter": float(params["convex_dimple_diameter"]),
-                            "concave_dimple_depth_scale": float(params["concave_dimple_depth_scale"]),
-                            "convex_dimple_height_scale": float(params["convex_dimple_height_scale"]),
-                        }
+                    # -------- Save best model --------
+                    if hardware_iteration > 0 and len(rewbuffer) > 0:   # no best model in first hardware iteration to avoid noise before any complete episodes and ensure >1 episode is completed in the set
                         
-                        best_log_json_path = os.path.join(self.log_dir, "best_policy_plus_design_params.json")
-                        with open(best_log_json_path, "w", encoding="utf-8") as f:
-                            json.dump(params_dict_with_it_details, f, indent=2)
+                        mean_rew = statistics.mean(rewbuffer)
 
-                        # -------- Save full best model history for analysis --------
-                        full_best_log_json_path = os.path.join(self.log_dir, "all_best_policy_plus_design_params.json")
-                        with open(full_best_log_json_path, "a", encoding="utf-8") as f:
-                            json.dump(params_dict_with_it_details, f, indent=2)
-                            f.write("\n")
+                        if mean_rew > best_mean_reward:
+                            best_mean_reward = mean_rew
+                            print(
+                                f"\033[92m[Best Model] Iter {it}: mean reward improved to {mean_rew:.3f}, saving model.\033[0m"
+                            )
+                            self.save(best_model_path, hardware_iteration, params_dict)
+                            # -------- Log best model info to text file --------
+                            best_log_path = os.path.join(self.log_dir, "best_policy_plus_design_params.txt")
+                            with open(best_log_path, "w") as f:
+                                f.write(f"Iter {it}: mean_reward = {mean_rew:.6f}\n Hardware Iteration = {hardware_iteration}\n Hardware Params = {params_dict}")
 
-                # Save model
-                if it % self.save_interval == 0:
-                    self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
+                            params_dict_with_it_details = {
+                                "policy_iteration": it,
+                                "current_best_mean_reward": float(mean_rew),
+                                "hardware_iteration": hardware_iteration,
+                                "base_sphere_centre_z_offset": float(params["base_sphere_centre_z_offset"]),
+                                "concave_dimple_diameter": float(params["concave_dimple_diameter"]),
+                                "convex_dimple_diameter": float(params["convex_dimple_diameter"]),
+                                "concave_dimple_depth_scale": float(params["concave_dimple_depth_scale"]),
+                                "convex_dimple_height_scale": float(params["convex_dimple_height_scale"]),
+                            }
+                            
+                            best_log_json_path = os.path.join(self.log_dir, "best_policy_plus_design_params.json")
+                            with open(best_log_json_path, "w", encoding="utf-8") as f:
+                                json.dump(params_dict_with_it_details, f, indent=2)
+
+                            # -------- Save full best model history for analysis --------
+                            full_best_log_json_path = os.path.join(self.log_dir, "all_best_policy_plus_design_params.json")
+                            with open(full_best_log_json_path, "a", encoding="utf-8") as f:
+                                json.dump(params_dict_with_it_details, f, indent=2)
+                                f.write("\n")
+
+                    # Save model
+                    if it % self.save_interval == 0:
+                        self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
+
+            else:
+                print(f"Learning iteration: {it}/{tot_iter}\n Initial buffering phase before reaching stable reward data...")
+                self.alg.storage.clear()
 
             # Clear episode infos
             ep_infos.clear()
