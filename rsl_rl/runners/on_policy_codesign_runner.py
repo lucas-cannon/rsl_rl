@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import statistics
 import time
 import torch
@@ -14,6 +15,7 @@ from collections import deque
 from tensordict import TensorDict
 import json
 import pathlib as Path
+import pickle
 
 import rsl_rl
 from rsl_rl.algorithms import PPO
@@ -32,7 +34,16 @@ from pathlib import Path  # instead of `import pathlib as Path`
 
 TACTILE_LAB_SRC = Path(Tactile_Lab.__file__).resolve().parent
 _PARAMS_DIR = Path(TACTILE_LAB_SRC).joinpath("tasks/direct/obj_push_codesign/codesign_toolkit/Codesign_Assets/params")
+reward_history_dir = Path(TACTILE_LAB_SRC).joinpath("tasks/direct/obj_push_codesign/codesign_toolkit/Codesign_Assets/reward_history")
 params_path = _PARAMS_DIR.joinpath("current_params.json")
+
+if not reward_history_dir.exists():
+    reward_history_dir.mkdir(parents=True, exist_ok=True)
+
+rewbuffer_path = reward_history_dir.joinpath("rewbuffer.pkl")
+lenbuffer_path = reward_history_dir.joinpath("lenbuffer.pkl")
+reward_history_path = reward_history_dir.joinpath("reward_history.json")
+per_iteration_hardware_reward_history_path = reward_history_dir.joinpath(f"per_iteration_hardware_reward_history.json")
 
 class OnPolicyCoDesignRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
@@ -71,14 +82,14 @@ class OnPolicyCoDesignRunner:
         self.writer = None
         self.tot_timesteps = 0
         self.tot_time = 0
-        self.current_learning_iteration = 0
+        self.current_learning_iteration = 1
         self.git_status_repos = [rsl_rl.__file__]
 
     def learn(self, num_learning_iterations: int, hardware_iteration: int, init_at_random_ep_len: bool = False) -> None:
         # Initialize writer
         self._prepare_logging_writer()
 
-        # Randomize initial episode lengths (for exploration)
+        # Randomize initial episode length per environment (for exploration) - for some reason this gives the same "random" values on every hardware iteration
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(
                 self.env.episode_length_buf, high=int(self.env.max_episode_length)
@@ -90,18 +101,70 @@ class OnPolicyCoDesignRunner:
 
         # Book keeping
         ep_infos = []
-        rewbuffer = deque(maxlen=100)
-        lenbuffer = deque(maxlen=100)
+        maxbufferlength = 100
+        cur_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration
+        skip_episodes = 1  # number of episodes to skip from reward buffer after task reset
+
+        param_history_dir = Path(self.log_dir).joinpath("hardware_params_history")
+
+        # load reward and length buffers from previous hardware iterations
+        if hardware_iteration == 0:
+            # fresh buffers for the first hardware iteration
+            rewbuffer = deque(maxlen=maxbufferlength)
+            lenbuffer = deque(maxlen=maxbufferlength)
+            best_mean_reward = -float("inf")
+
+            # Create directory to store hardware parameters history
+            if not param_history_dir.exists():
+                param_history_dir.mkdir(parents=True, exist_ok=True)
+
+            # Clear all existing contents of the parameter history directory
+            for entry in param_history_dir.iterdir():
+                if entry.is_file() or entry.is_symlink():
+                    entry.unlink()
+                elif entry.is_dir():
+                    shutil.rmtree(entry)
+        else:
+            with open(rewbuffer_path, "rb") as f:
+                rewbuffer = pickle.load(f)
+            with open(lenbuffer_path, "rb") as f:
+                lenbuffer = pickle.load(f)
+            with open(reward_history_path, "r", encoding="utf-8") as f:
+                reward_history_dict = json.load(f)
+            best_mean_reward = reward_history_dict.get("best_mean_reward", -float("inf"))
+
+        per_it_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration for per-iteration logging
+
+        # -------- Log hardware iteration and design parameters to text file --------
+        with open(params_path, "r", encoding="utf-8") as f:
+                    params = json.load(f)
+
+        params_dict = {
+            "base_sphere_centre_z_offset": float(params["base_sphere_centre_z_offset"]),
+            "concave_dimple_diameter": float(params["concave_dimple_diameter"]),
+            "convex_dimple_diameter": float(params["convex_dimple_diameter"]),
+            "concave_dimple_depth_scale": float(params["concave_dimple_depth_scale"]),
+            "convex_dimple_height_scale": float(params["convex_dimple_height_scale"]),
+        }
+
+        hardware_params_path = os.path.join(
+            param_history_dir,
+            f"hardware_params_for_hardware_iteration_{hardware_iteration}.txt",
+        )
+
+        with open(hardware_params_path, "w") as f:
+            f.write(f"Hardware Iteration = {hardware_iteration}\n Hardware Params = {params_dict}")
+
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         # --- Best policy tracking ---
-        best_mean_reward = -float("inf")
+        
         best_model_path = os.path.join(self.log_dir, "best_model.pt") if self.log_dir else None
 
         # Create buffers for logging extrinsic and intrinsic rewards
         if self.alg.rnd:
-            erewbuffer = deque(maxlen=100)
-            irewbuffer = deque(maxlen=100)
+            erewbuffer = deque(maxlen=maxbufferlength)
+            irewbuffer = deque(maxlen=maxbufferlength)
             cur_ereward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
             cur_ireward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
@@ -111,9 +174,12 @@ class OnPolicyCoDesignRunner:
             self.alg.broadcast_parameters()
 
         # Start training
-        start_iter = self.current_learning_iteration
-        tot_iter = start_iter + num_learning_iterations
-        for it in range(start_iter, tot_iter):
+        if hardware_iteration == 0:
+            start_iter = self.current_learning_iteration
+        else:
+            start_iter = self.current_learning_iteration + 1  # continue from last iteration
+        tot_iter = start_iter + num_learning_iterations - 1
+        for it in range(start_iter, tot_iter + 1):
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -145,8 +211,11 @@ class OnPolicyCoDesignRunner:
                         cur_episode_length += 1
                         # Clear data for completed episodes
                         new_ids = (dones > 0).nonzero(as_tuple=False)
-                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                        if len(cur_rewbuffer) > skip_episodes-1: # skip first data points from reward buffer after task reset
+                            rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist()) # skip first data points
+                            lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                            per_it_rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                        cur_rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
                         if self.alg.rnd:
@@ -162,8 +231,9 @@ class OnPolicyCoDesignRunner:
                 # Compute returns
                 self.alg.compute_returns(obs)
             
-            # Update policy
-            loss_dict = self.alg.update()
+            if len(cur_rewbuffer) > skip_episodes-1:
+                # Update policy
+                loss_dict = self.alg.update()
 
             stop = time.time()
             learn_time = stop - start
@@ -177,25 +247,8 @@ class OnPolicyCoDesignRunner:
 
                 # only need to do this (below) once per hardware_it
 
-                with open(params_path, "r", encoding="utf-8") as f:
-                    params = json.load(f)
-
-                param_1 = float(params["base_sphere_centre_z_offset"])
-                param_2 = float(params["concave_dimple_diameter"])
-                param_3 = float(params["convex_dimple_diameter"])
-                param_4 = float(params["concave_dimple_depth_scale"])
-                param_5 = float(params["convex_dimple_height_scale"])
-
-                params_dict = {
-                    "base_sphere_centre_z_offset": float(param_1),
-                    "concave_dimple_diameter": float(param_2),
-                    "convex_dimple_diameter": float(param_3),
-                    "concave_dimple_depth_scale": float(param_4),
-                    "convex_dimple_height_scale": float(param_5),
-                }
-
                 # -------- Save best model --------
-                if it > 40:   # (200) avoid noise before any complete episodes
+                if hardware_iteration > 0 and len(rewbuffer) > 0:   # no best model in first hardware iteration to avoid noise before any complete episodes and ensure >1 episode is completed in the set
                     
                     mean_rew = statistics.mean(rewbuffer)
 
@@ -207,8 +260,29 @@ class OnPolicyCoDesignRunner:
                         self.save(best_model_path, hardware_iteration, params_dict)
                         # -------- Log best model info to text file --------
                         best_log_path = os.path.join(self.log_dir, "best_policy_plus_design_params.txt")
-                        with open(best_log_path, "a") as f:
+                        with open(best_log_path, "w") as f:
                             f.write(f"Iter {it}: mean_reward = {mean_rew:.6f}\n Hardware Iteration = {hardware_iteration}\n Hardware Params = {params_dict}")
+
+                        params_dict_with_it_details = {
+                            "policy_iteration": it,
+                            "current_best_mean_reward": float(mean_rew),
+                            "hardware_iteration": hardware_iteration,
+                            "base_sphere_centre_z_offset": float(params["base_sphere_centre_z_offset"]),
+                            "concave_dimple_diameter": float(params["concave_dimple_diameter"]),
+                            "convex_dimple_diameter": float(params["convex_dimple_diameter"]),
+                            "concave_dimple_depth_scale": float(params["concave_dimple_depth_scale"]),
+                            "convex_dimple_height_scale": float(params["convex_dimple_height_scale"]),
+                        }
+                        
+                        best_log_json_path = os.path.join(self.log_dir, "best_policy_plus_design_params.json")
+                        with open(best_log_json_path, "w", encoding="utf-8") as f:
+                            json.dump(params_dict_with_it_details, f, indent=2)
+
+                        # -------- Save full best model history for analysis --------
+                        full_best_log_json_path = os.path.join(self.log_dir, "all_best_policy_plus_design_params.json")
+                        with open(full_best_log_json_path, "a", encoding="utf-8") as f:
+                            json.dump(params_dict_with_it_details, f, indent=2)
+                            f.write("\n")
 
                 # Save model
                 if it % self.save_interval == 0:
@@ -228,6 +302,26 @@ class OnPolicyCoDesignRunner:
         # Save the final model after training
         if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+
+        # Save reward buffer history so it can be loaded elsewhere
+        with open(rewbuffer_path, "wb") as f:
+            pickle.dump(rewbuffer, f)
+
+        with open(lenbuffer_path, "wb") as f:
+            pickle.dump(lenbuffer, f)
+
+        reward_history_dict = {
+            "best_mean_reward": float(best_mean_reward),
+        }
+
+        with open(reward_history_path, "w", encoding="utf-8") as f:
+            json.dump(reward_history_dict, f, indent=2)
+
+        per_it_mean_rew = statistics.mean(per_it_rewbuffer)
+
+        with open(per_iteration_hardware_reward_history_path, "a", encoding="utf-8") as f:
+            json.dump({f"hardware_iteration_{hardware_iteration}_reward": float(per_it_mean_rew)}, f, indent=2)
+
 
     def log(self, locs: dict, width: int = 80, pad: int = 35) -> None:
         # Compute the collection size
