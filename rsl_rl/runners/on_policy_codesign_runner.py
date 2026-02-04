@@ -86,7 +86,7 @@ class OnPolicyCoDesignRunner:
         self,
         num_learning_iterations: int,
         hardware_iteration: int,
-        noisy_iter_threshold: int = 250,
+        noisy_iter_threshold: int,
         init_at_random_ep_len: bool = False,
     ) -> None:
         # Initialize writer
@@ -251,10 +251,6 @@ class OnPolicyCoDesignRunner:
                     # if len(cur_rewbuffer) > skip_episodes-1:
                     self.log(locals())
 
-                    print(f"logging hardware iteration: {hardware_iteration}")
-
-                    # only need to do this (below) once per hardware_it
-
                     # -------- Save best model --------
                     # no best model in first hardware iteration to avoid noise before any
                     # complete episodes and ensure >1 episode is completed in the set.
@@ -313,6 +309,8 @@ class OnPolicyCoDesignRunner:
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
+
+        print(f"Logging Hardware Iteration {hardware_iteration} complete. Best mean reward: {best_mean_reward:.3f}")
 
         # Save the final model after training
         if self.log_dir is not None and not self.disable_logs:
