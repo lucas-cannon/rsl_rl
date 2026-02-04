@@ -37,9 +37,6 @@ _PARAMS_DIR = Path(TACTILE_LAB_SRC).joinpath("tasks/direct/obj_push_codesign/cod
 reward_history_dir = Path(TACTILE_LAB_SRC).joinpath("tasks/direct/obj_push_codesign/codesign_toolkit/Codesign_Assets/reward_history")
 params_path = _PARAMS_DIR.joinpath("current_params.json")
 
-if not reward_history_dir.exists():
-    reward_history_dir.mkdir(parents=True, exist_ok=True)
-
 rewbuffer_path = reward_history_dir.joinpath("rewbuffer.pkl")
 lenbuffer_path = reward_history_dir.joinpath("lenbuffer.pkl")
 reward_history_path = reward_history_dir.joinpath("reward_history.json")
@@ -85,7 +82,13 @@ class OnPolicyCoDesignRunner:
         self.current_learning_iteration = 1
         self.git_status_repos = [rsl_rl.__file__]
 
-    def learn(self, num_learning_iterations: int, hardware_iteration: int, init_at_random_ep_len: bool = False) -> None:
+    def learn(
+        self,
+        num_learning_iterations: int,
+        hardware_iteration: int,
+        noisy_iter_threshold: int = 250,
+        init_at_random_ep_len: bool = False,
+    ) -> None:
         # Initialize writer
         self._prepare_logging_writer()
 
@@ -103,7 +106,7 @@ class OnPolicyCoDesignRunner:
         ep_infos = []
         maxbufferlength = 100
         cur_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration
-        skip_episodes = 1  # number of episodes to skip from reward buffer after task reset
+        skip_episodes = 0  # number of episodes to skip from reward buffer after task reset
 
         param_history_dir = Path(self.log_dir).joinpath("hardware_params_history")
 
@@ -253,7 +256,10 @@ class OnPolicyCoDesignRunner:
                     # only need to do this (below) once per hardware_it
 
                     # -------- Save best model --------
-                    if hardware_iteration > 0 and len(rewbuffer) > 0:   # no best model in first hardware iteration to avoid noise before any complete episodes and ensure >1 episode is completed in the set
+                    # no best model in first hardware iteration to avoid noise before any
+                    # complete episodes and ensure >1 episode is completed in the set.
+                    # The iteration threshold is configurable via noisy_iter_threshold.
+                    if hardware_iteration > 0 and len(rewbuffer) > 0 and it > noisy_iter_threshold:
                         
                         mean_rew = statistics.mean(rewbuffer)
 
@@ -328,8 +334,20 @@ class OnPolicyCoDesignRunner:
 
         per_it_mean_rew = statistics.mean(per_it_rewbuffer)
 
-        with open(per_iteration_hardware_reward_history_path, "a", encoding="utf-8") as f:
-            json.dump({f"hardware_iteration_{hardware_iteration}_reward": float(per_it_mean_rew)}, f, indent=2)
+        # Append single JSON object
+        if per_iteration_hardware_reward_history_path.exists():
+            try:
+                with open(per_iteration_hardware_reward_history_path, "r", encoding="utf-8") as f:
+                    per_it_history = json.load(f)
+            except json.JSONDecodeError:
+                per_it_history = {}
+        else:
+            per_it_history = {}
+
+        per_it_history[f"hardware_iteration_mean_{hardware_iteration}_reward"] = float(per_it_mean_rew)
+
+        with open(per_iteration_hardware_reward_history_path, "w", encoding="utf-8") as f:
+            json.dump(per_it_history, f, indent=2)
 
 
     def log(self, locs: dict, width: int = 80, pad: int = 35) -> None:
