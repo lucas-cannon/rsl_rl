@@ -106,7 +106,10 @@ class OnPolicyCoDesignRunner:
         ep_infos = []
         maxbufferlength = 100
         cur_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration
-        skip_episodes = 0  # number of episodes to skip from reward buffer after task reset
+        skip_episodes = 1  # number of episodes to skip from reward buffer after task reset
+        skip_iterations = 12  # number of iterations to skip from reward buffer after task reset (use this instead)
+        per_it_success_ratio = 0.0  # track latest successes/attempts ratio for this hardware iteration
+        per_it_success_ratio_buffer = deque(maxlen=maxbufferlength)  # buffer for success ratio logging per hardware iteration
 
         param_history_dir = Path(self.log_dir).joinpath("hardware_params_history")
 
@@ -116,6 +119,9 @@ class OnPolicyCoDesignRunner:
             rewbuffer = deque(maxlen=maxbufferlength)
             lenbuffer = deque(maxlen=maxbufferlength)
             best_mean_reward = -float("inf")
+            historical_success_ratio = float(0)
+            historical_attempt_count = float(0)
+            historical_success_count = float(0)
 
             # Create directory to store hardware parameters history
             if not param_history_dir.exists():
@@ -184,6 +190,8 @@ class OnPolicyCoDesignRunner:
         tot_iter = start_iter + num_learning_iterations - 1
 
         for it in range(start_iter, tot_iter + 1):
+            current_iter = it - start_iter + 1
+            print(f"current_iter: {current_iter}")
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -215,7 +223,7 @@ class OnPolicyCoDesignRunner:
                         cur_episode_length += 1
                         # Clear data for completed episodes
                         new_ids = (dones > 0).nonzero(as_tuple=False)
-                        if len(cur_rewbuffer) > skip_episodes-1: # skip first data points from reward buffer after task reset
+                        if current_iter > skip_iterations: # skip first data points from reward buffer after task reset
                             rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist()) # skip first data points
                             lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
                             per_it_rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
@@ -234,9 +242,22 @@ class OnPolicyCoDesignRunner:
 
                 # Compute returns
                 self.alg.compute_returns(obs)
+
+            # Collect success ratio for per-iteration logging if available
+            if "per_it_success_ratio" in extras["log"]:
+                success_val = extras["log"]["per_it_success_ratio"]
+                per_it_success_ratio = float(success_val)
+
+            if "historical_success_ratio" in extras["log"]:
+                historical_success_val = extras["log"]["historical_success_ratio"]
+                historical_attempt_val = extras["log"]["historical_attempt_count"]
+                historical_success_val = extras["log"]["historical_success_count"]
+                historical_success_ratio = float(historical_success_val)
+                historical_attempt_count = float(historical_attempt_val)
+                historical_success_count = float(historical_success_val)
             
             # Given that our hardware iterations are short (W.R.T. typical RL training), we ignore the first episode reward(s) after a task reset to avoid invalid/biased data due to environment reset.
-            if len(cur_rewbuffer) > skip_episodes-1:
+            if current_iter > skip_iterations:
 
                 # Update policy
                 loss_dict = self.alg.update()
@@ -274,6 +295,8 @@ class OnPolicyCoDesignRunner:
                                 "policy_iteration": it,
                                 "current_best_mean_reward": float(mean_rew),
                                 "hardware_iteration": hardware_iteration,
+                                "per_it_success_ratio": per_it_success_ratio,
+                                "historical_success_ratio": historical_success_ratio,
                                 "base_sphere_centre_z_offset": float(params["base_sphere_centre_z_offset"]),
                                 "concave_dimple_diameter": float(params["concave_dimple_diameter"]),
                                 "convex_dimple_diameter": float(params["convex_dimple_diameter"]),
@@ -325,12 +348,17 @@ class OnPolicyCoDesignRunner:
 
         reward_history_dict = {
             "best_mean_reward": float(best_mean_reward),
+            "historical_success_ratio": float(historical_success_ratio),
+            "historical_attempt_count": float(historical_attempt_count),
+            "historical_success_count": float(historical_success_count),
         }
 
         with open(reward_history_path, "w", encoding="utf-8") as f:
             json.dump(reward_history_dict, f, indent=2)
 
         per_it_mean_rew = statistics.mean(per_it_rewbuffer)
+        # Use only the final observed successes/attempts ratio for this hardware iteration
+        per_it_final_success_ratio = float(per_it_success_ratio)
 
         # Append single JSON object
         if per_iteration_hardware_reward_history_path.exists():
@@ -342,7 +370,8 @@ class OnPolicyCoDesignRunner:
         else:
             per_it_history = {}
 
-        per_it_history[f"hardware_iteration_mean_{hardware_iteration}_reward"] = float(per_it_mean_rew)
+        per_it_history[f"hardware_iteration_{hardware_iteration}_mean_reward"] = float(per_it_mean_rew)
+        per_it_history[f"hardware_iteration_{hardware_iteration}_success_ratio"] = float(per_it_final_success_ratio)
 
         with open(per_iteration_hardware_reward_history_path, "w", encoding="utf-8") as f:
             json.dump(per_it_history, f, indent=2)
