@@ -104,9 +104,8 @@ class OnPolicyCoDesignRunner:
 
         # Book keeping
         ep_infos = []
-        maxbufferlength = 100
+        maxbufferlength = 250
         cur_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration
-        skip_episodes = 1  # number of episodes to skip from reward buffer after task reset
         skip_iterations = 12  # number of iterations to skip from reward buffer after task reset (use this instead)
         per_it_success_ratio = 0.0  # track latest successes/attempts ratio for this hardware iteration
         per_it_success_ratio_buffer = deque(maxlen=maxbufferlength)  # buffer for success ratio logging per hardware iteration
@@ -191,7 +190,6 @@ class OnPolicyCoDesignRunner:
 
         for it in range(start_iter, tot_iter + 1):
             current_iter = it - start_iter + 1
-            print(f"current_iter: {current_iter}")
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -249,10 +247,10 @@ class OnPolicyCoDesignRunner:
                 per_it_success_ratio = float(success_val)
 
             if "historical_success_ratio" in extras["log"]:
-                historical_success_val = extras["log"]["historical_success_ratio"]
+                historical_ratio_val = extras["log"]["historical_success_ratio"]
                 historical_attempt_val = extras["log"]["historical_attempt_count"]
                 historical_success_val = extras["log"]["historical_success_count"]
-                historical_success_ratio = float(historical_success_val)
+                historical_success_ratio = float(historical_ratio_val)
                 historical_attempt_count = float(historical_attempt_val)
                 historical_success_count = float(historical_success_val)
             
@@ -372,6 +370,7 @@ class OnPolicyCoDesignRunner:
 
         per_it_history[f"hardware_iteration_{hardware_iteration}_mean_reward"] = float(per_it_mean_rew)
         per_it_history[f"hardware_iteration_{hardware_iteration}_success_ratio"] = float(per_it_final_success_ratio)
+        per_it_history[f"hardware_iteration_{hardware_iteration}_historical_success_ratio"] = float(historical_success_ratio)
 
         with open(per_iteration_hardware_reward_history_path, "w", encoding="utf-8") as f:
             json.dump(per_it_history, f, indent=2)
