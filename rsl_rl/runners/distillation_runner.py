@@ -138,20 +138,22 @@ class DistillationRunner(OnPolicyRunner):
 
                 # ========== Distillation mode: track BC loss ==========
                 # set_trace()
+
                 if "behavior" in loss_dict:
+
                     bc_loss = float(loss_dict["behavior"])
+                    if it > 200:   # avoid noise before any complete episodes
+                        if bc_loss < best_bc_loss:
+                            best_bc_loss = bc_loss
+                            print(
+                                f"\033[92m[Best Model] Iter {it}: bc_loss improved to {bc_loss:.6f}, saving model.\033[0m"
+                            )
+                            self.save(best_model_path)
 
-                    if bc_loss < best_bc_loss:
-                        best_bc_loss = bc_loss
-                        print(
-                            f"\033[92m[Best Model] Iter {it}: bc_loss improved to {bc_loss:.6f}, saving model.\033[0m"
-                        )
-                        self.save(best_model_path)
-
-                        # Write to logging text file
-                        best_log_path = os.path.join(self.log_dir, "best_policy.txt")
-                        with open(best_log_path, "a") as f:
-                            f.write(f"Iter {it}: bc_loss = {bc_loss:.6f}\n")
+                            # Write to logging text file
+                            best_log_path = os.path.join(self.log_dir, "best_policy.txt")
+                            with open(best_log_path, "a") as f:
+                                f.write(f"Iter {it}: bc_loss = {bc_loss:.6f}\n")
 
                 # ========== PPO mode: track reward ==========
                 else:
