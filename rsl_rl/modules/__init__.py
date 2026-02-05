@@ -12,6 +12,7 @@ from .rnd import RandomNetworkDistillation, resolve_rnd_config
 from .student_teacher import StudentTeacher
 from .student_teacher_recurrent import StudentTeacherRecurrent
 from .student_teacher_cnn import StudentTeacherCNN
+from .student_teacher_cnn_rnn import StudentTeacherCNNRNN
 from .symmetry import resolve_symmetry_config
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "StudentTeacher",
     "StudentTeacherRecurrent",
     "StudentTeacherCNN",
+    "StudentTeacherCNNRNN",
     "resolve_rnd_config",
     "resolve_symmetry_config",
 ]

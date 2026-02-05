@@ -15,7 +15,7 @@ import statistics
 import rsl_rl
 from rsl_rl.algorithms import Distillation
 from rsl_rl.env import VecEnv
-from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent, StudentTeacherCNN
+from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent, StudentTeacherCNN, StudentTeacherCNNRNN
 from rsl_rl.runners import OnPolicyRunner
 from rsl_rl.utils import resolve_obs_groups, store_code_state
 from ipdb import set_trace
@@ -190,7 +190,7 @@ class DistillationRunner(OnPolicyRunner):
         """Construct the distillation algorithm."""
         # Initialize the policy
         student_teacher_class = eval(self.policy_cfg.pop("class_name"))
-        student_teacher: StudentTeacher | StudentTeacherRecurrent | StudentTeacherCNN = student_teacher_class(
+        student_teacher: StudentTeacher | StudentTeacherRecurrent | StudentTeacherCNN | StudentTeacherCNNRNN = student_teacher_class(
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
