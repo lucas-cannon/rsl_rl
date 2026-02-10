@@ -15,6 +15,7 @@ from tensordict import TensorDict
 import json
 import pathlib as Path
 import pickle
+import shutil
 
 import rsl_rl
 from rsl_rl.algorithms import PPO
@@ -374,6 +375,8 @@ class OnPolicyCoDesignRunner:
 
         with open(per_iteration_hardware_parameters_path, "w", encoding="utf-8") as f:
             json.dump(hw_params_history, f, indent=2)
+        if self.log_dir is not None:
+            shutil.copy2(per_iteration_hardware_parameters_path, os.path.join(self.log_dir, "per_iteration_hardware_parameters.json"))
 
         # ---- Persist reward and length buffers for the next hardware iteration ----
         with open(rewbuffer_path, "wb") as f:
@@ -418,6 +421,8 @@ class OnPolicyCoDesignRunner:
 
         with open(per_iteration_hardware_reward_history_path, "w", encoding="utf-8") as f:
             json.dump(per_it_history, f, indent=2)
+        if self.log_dir is not None:
+            shutil.copy2(per_iteration_hardware_reward_history_path, os.path.join(self.log_dir, "per_iteration_hardware_reward_history.json"))
 
         # ---- Log hardware-iteration-level scalars to TensorBoard ----
         if self.writer is not None:
