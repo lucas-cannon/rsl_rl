@@ -341,8 +341,8 @@ class OnPolicyCoDesignRunner:
             json.dump(details, f, indent=2)
             f.write("\n")
 
-    @staticmethod
     def _log_hardware_iteration_end(
+        self,
         hardware_iteration: int,
         params_dict: dict,
         rewbuffer: deque,
@@ -418,6 +418,20 @@ class OnPolicyCoDesignRunner:
 
         with open(per_iteration_hardware_reward_history_path, "w", encoding="utf-8") as f:
             json.dump(per_it_history, f, indent=2)
+
+        # ---- Log hardware-iteration-level scalars to TensorBoard ----
+        if self.writer is not None:
+            step = hardware_iteration
+            self.writer.add_scalar("Codesign/mean_reward", float(per_it_mean_rew), step)
+            self.writer.add_scalar("Codesign/best_mean_reward", float(best_mean_reward), step)
+            self.writer.add_scalar("Codesign/success_ratio", float(per_it_final_success_ratio), step)
+            self.writer.add_scalar("Codesign/historical_success_ratio", float(historical_success_ratio), step)
+            self.writer.add_scalar("Codesign/historical_attempt_count", float(historical_attempt_count), step)
+            self.writer.add_scalar("Codesign/historical_success_count", float(historical_success_count), step)
+            # Log each morphology parameter
+            for param_name, param_val in params_dict.items():
+                self.writer.add_scalar(f"Codesign_Params/{param_name}", float(param_val), step)
+            self.writer.flush()
 
     # --------------- General logging ---------------
 
