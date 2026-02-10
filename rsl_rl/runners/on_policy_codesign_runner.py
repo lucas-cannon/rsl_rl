@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import statistics
 import time
 import torch
@@ -41,6 +40,7 @@ rewbuffer_path = reward_history_dir.joinpath("rewbuffer.pkl")
 lenbuffer_path = reward_history_dir.joinpath("lenbuffer.pkl")
 reward_history_path = reward_history_dir.joinpath("reward_history.json")
 per_iteration_hardware_reward_history_path = reward_history_dir.joinpath(f"per_iteration_hardware_reward_history.json")
+per_iteration_hardware_parameters_path = reward_history_dir.joinpath(f"per_iteration_hardware_parameters.json")
 
 class OnPolicyCoDesignRunner:
     """On-policy runner for training and evaluation of actor-critic methods."""
@@ -110,8 +110,6 @@ class OnPolicyCoDesignRunner:
         per_it_success_ratio = 0.0  # track latest successes/attempts ratio for this hardware iteration
         per_it_success_ratio_buffer = deque(maxlen=maxbufferlength)  # buffer for success ratio logging per hardware iteration
 
-        param_history_dir = Path(self.log_dir).joinpath("hardware_params_history")
-
         # load reward and length buffers from previous hardware iterations
         if hardware_iteration == 0:
             # fresh buffers for the first hardware iteration
@@ -121,17 +119,6 @@ class OnPolicyCoDesignRunner:
             historical_success_ratio = float(0)
             historical_attempt_count = float(0)
             historical_success_count = float(0)
-
-            # Create directory to store hardware parameters history
-            if not param_history_dir.exists():
-                param_history_dir.mkdir(parents=True, exist_ok=True)
-
-            # Clear all existing contents of the parameter history directory
-            for entry in param_history_dir.iterdir():
-                if entry.is_file() or entry.is_symlink():
-                    entry.unlink()
-                elif entry.is_dir():
-                    shutil.rmtree(entry)
         else:
             with open(rewbuffer_path, "rb") as f:
                 rewbuffer = pickle.load(f)
@@ -143,7 +130,7 @@ class OnPolicyCoDesignRunner:
 
         per_it_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration for per-iteration logging
 
-        # -------- Log hardware iteration and design parameters to text file --------
+        # -------- Load current hardware design parameters --------
         with open(params_path, "r", encoding="utf-8") as f:
                     params = json.load(f)
 
@@ -154,14 +141,6 @@ class OnPolicyCoDesignRunner:
             "concave_dimple_depth_scale": float(params["concave_dimple_depth_scale"]),
             "convex_dimple_height_scale": float(params["convex_dimple_height_scale"]),
         }
-
-        hardware_params_path = os.path.join(
-            param_history_dir,
-            f"hardware_params_for_hardware_iteration_{hardware_iteration}.txt",
-        )
-
-        with open(hardware_params_path, "w") as f:
-            f.write(f"Hardware Iteration = {hardware_iteration}\n Hardware Params = {params_dict}")
 
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
@@ -267,7 +246,6 @@ class OnPolicyCoDesignRunner:
                 if self.log_dir is not None and not self.disable_logs:
 
                     # Log information
-                    # if len(cur_rewbuffer) > skip_episodes-1:
                     self.log(locals())
 
                     # -------- Save best model --------
@@ -280,37 +258,10 @@ class OnPolicyCoDesignRunner:
 
                         if mean_rew > best_mean_reward:
                             best_mean_reward = mean_rew
-                            print(
-                                f"\033[92m[Best Model] Iter {it}: mean reward improved to {mean_rew:.3f}, saving model.\033[0m"
+                            self._log_best_model(
+                                it, hardware_iteration, mean_rew, params_dict,
+                                per_it_success_ratio, historical_success_ratio, best_model_path,
                             )
-                            self.save(best_model_path, hardware_iteration, params_dict)
-                            # -------- Log best model info to text file --------
-                            best_log_path = os.path.join(self.log_dir, "best_policy_plus_design_params.txt")
-                            with open(best_log_path, "w") as f:
-                                f.write(f"Iter {it}: mean_reward = {mean_rew:.6f}\n Hardware Iteration = {hardware_iteration}\n Hardware Params = {params_dict}")
-
-                            params_dict_with_it_details = {
-                                "policy_iteration": it,
-                                "current_best_mean_reward": float(mean_rew),
-                                "hardware_iteration": hardware_iteration,
-                                "per_it_success_ratio": per_it_success_ratio,
-                                "historical_success_ratio": historical_success_ratio,
-                                "base_sphere_centre_z_offset": float(params["base_sphere_centre_z_offset"]),
-                                "concave_dimple_diameter": float(params["concave_dimple_diameter"]),
-                                "convex_dimple_diameter": float(params["convex_dimple_diameter"]),
-                                "concave_dimple_depth_scale": float(params["concave_dimple_depth_scale"]),
-                                "convex_dimple_height_scale": float(params["convex_dimple_height_scale"]),
-                            }
-                            
-                            best_log_json_path = os.path.join(self.log_dir, "best_policy_plus_design_params.json")
-                            with open(best_log_json_path, "w", encoding="utf-8") as f:
-                                json.dump(params_dict_with_it_details, f, indent=2)
-
-                            # -------- Save full best model history for analysis --------
-                            full_best_log_json_path = os.path.join(self.log_dir, "all_best_policy_plus_design_params.json")
-                            with open(full_best_log_json_path, "a", encoding="utf-8") as f:
-                                json.dump(params_dict_with_it_details, f, indent=2)
-                                f.write("\n")
 
                     # Save model
                     if it % self.save_interval == 0:
@@ -337,28 +288,113 @@ class OnPolicyCoDesignRunner:
         if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
-        # Save reward buffer history so it can be loaded elsewhere
+        self._log_hardware_iteration_end(
+            hardware_iteration, params_dict, rewbuffer, lenbuffer,
+            best_mean_reward, historical_success_ratio, historical_attempt_count,
+            historical_success_count, per_it_rewbuffer, per_it_success_ratio,
+        )
+
+
+    # --------------- Codesign-specific logging helpers ---------------
+
+    def _log_best_model(
+        self,
+        it: int,
+        hardware_iteration: int,
+        mean_rew: float,
+        params_dict: dict,
+        per_it_success_ratio: float,
+        historical_success_ratio: float,
+        best_model_path: str,
+    ) -> None:
+        """Save the new best model checkpoint and log associated design parameters."""
+        print(
+            f"\033[92m[Best Model] Iter {it}: mean reward improved to {mean_rew:.3f}, saving model.\033[0m"
+        )
+        self.save(best_model_path, hardware_iteration, params_dict)
+
+        # Plain-text summary
+        best_log_path = os.path.join(self.log_dir, "best_policy_plus_design_params.txt")
+        with open(best_log_path, "w") as f:
+            f.write(
+                f"Iter {it}: mean_reward = {mean_rew:.6f}\n"
+                f" Hardware Iteration = {hardware_iteration}\n"
+                f" Hardware Params = {params_dict}"
+            )
+
+        # Structured JSON (latest best only)
+        details = {
+            "policy_iteration": it,
+            "current_best_mean_reward": float(mean_rew),
+            "hardware_iteration": hardware_iteration,
+            "per_it_success_ratio": per_it_success_ratio,
+            "historical_success_ratio": historical_success_ratio,
+            **params_dict,
+        }
+        best_log_json_path = os.path.join(self.log_dir, "best_policy_plus_design_params.json")
+        with open(best_log_json_path, "w", encoding="utf-8") as f:
+            json.dump(details, f, indent=2)
+
+        # Append to cumulative history
+        full_best_log_json_path = os.path.join(self.log_dir, "all_best_policy_plus_design_params.json")
+        with open(full_best_log_json_path, "a", encoding="utf-8") as f:
+            json.dump(details, f, indent=2)
+            f.write("\n")
+
+    @staticmethod
+    def _log_hardware_iteration_end(
+        hardware_iteration: int,
+        params_dict: dict,
+        rewbuffer: deque,
+        lenbuffer: deque,
+        best_mean_reward: float,
+        historical_success_ratio: float,
+        historical_attempt_count: float,
+        historical_success_count: float,
+        per_it_rewbuffer: deque,
+        per_it_success_ratio: float,
+    ) -> None:
+        """Serialise reward buffers, hardware parameters, and per-iteration history at the end of a hardware iteration."""
+        # ---- Accumulate hardware parameters into a single JSON file ----
+        if per_iteration_hardware_parameters_path.exists():
+            try:
+                with open(per_iteration_hardware_parameters_path, "r", encoding="utf-8") as f:
+                    hw_params_history = json.load(f)
+            except json.JSONDecodeError:
+                hw_params_history = {}
+        else:
+            hw_params_history = {}
+
+        prefix = f"hardware_iteration_{hardware_iteration}"
+        hw_params_history[f"{prefix}_z"] = float(params_dict["base_sphere_centre_z_offset"])
+        hw_params_history[f"{prefix}_cd"] = float(params_dict["concave_dimple_diameter"])
+        hw_params_history[f"{prefix}_vd"] = float(params_dict["convex_dimple_diameter"])
+        hw_params_history[f"{prefix}_cds"] = float(params_dict["concave_dimple_depth_scale"])
+        hw_params_history[f"{prefix}_vhs"] = float(params_dict["convex_dimple_height_scale"])
+
+        with open(per_iteration_hardware_parameters_path, "w", encoding="utf-8") as f:
+            json.dump(hw_params_history, f, indent=2)
+
+        # ---- Persist reward and length buffers for the next hardware iteration ----
         with open(rewbuffer_path, "wb") as f:
             pickle.dump(rewbuffer, f)
-
         with open(lenbuffer_path, "wb") as f:
             pickle.dump(lenbuffer, f)
 
+        # Persist cross-iteration reward summary
         reward_history_dict = {
             "best_mean_reward": float(best_mean_reward),
             "historical_success_ratio": float(historical_success_ratio),
             "historical_attempt_count": float(historical_attempt_count),
             "historical_success_count": float(historical_success_count),
         }
-
         with open(reward_history_path, "w", encoding="utf-8") as f:
             json.dump(reward_history_dict, f, indent=2)
 
+        # Accumulate per-hardware-iteration reward history
         per_it_mean_rew = statistics.mean(per_it_rewbuffer)
-        # Use only the final observed successes/attempts ratio for this hardware iteration
         per_it_final_success_ratio = float(per_it_success_ratio)
 
-        # Append single JSON object
         if per_iteration_hardware_reward_history_path.exists():
             try:
                 with open(per_iteration_hardware_reward_history_path, "r", encoding="utf-8") as f:
@@ -368,13 +404,22 @@ class OnPolicyCoDesignRunner:
         else:
             per_it_history = {}
 
-        per_it_history[f"hardware_iteration_{hardware_iteration}_mean_reward"] = float(per_it_mean_rew)
-        per_it_history[f"hardware_iteration_{hardware_iteration}_success_ratio"] = float(per_it_final_success_ratio)
-        per_it_history[f"hardware_iteration_{hardware_iteration}_historical_success_ratio"] = float(historical_success_ratio)
+        prefix = f"hardware_iteration_{hardware_iteration}"
+        per_it_history[f"{prefix}_mean_reward"] = float(per_it_mean_rew)
+        per_it_history[f"{prefix}_success_ratio"] = float(per_it_final_success_ratio)
+        per_it_history[f"{prefix}_historical_success_ratio"] = float(historical_success_ratio)
+        per_it_history[f"{prefix}_params"] = (
+            f"z={params_dict['base_sphere_centre_z_offset']:.3f} "
+            f"cd={params_dict['concave_dimple_diameter']:.3f} "
+            f"vd={params_dict['convex_dimple_diameter']:.3f} "
+            f"cds={params_dict['concave_dimple_depth_scale']:.3f} "
+            f"vhs={params_dict['convex_dimple_height_scale']:.3f}"
+        )
 
         with open(per_iteration_hardware_reward_history_path, "w", encoding="utf-8") as f:
             json.dump(per_it_history, f, indent=2)
 
+    # --------------- General logging ---------------
 
     def log(self, locs: dict, width: int = 80, pad: int = 35) -> None:
         # Compute the collection size
