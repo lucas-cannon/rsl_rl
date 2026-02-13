@@ -39,6 +39,7 @@ params_path = _PARAMS_DIR.joinpath("current_params.json")
 
 rewbuffer_path = reward_history_dir.joinpath("rewbuffer.pkl")
 lenbuffer_path = reward_history_dir.joinpath("lenbuffer.pkl")
+windowed_attempt_buffer_path = reward_history_dir.joinpath("windowed_attempt_buffer.pkl")
 reward_history_path = reward_history_dir.joinpath("reward_history.json")
 per_iteration_hardware_reward_history_path = reward_history_dir.joinpath(f"per_iteration_hardware_reward_history.json")
 per_iteration_hardware_parameters_path = reward_history_dir.joinpath(f"per_iteration_hardware_parameters.json")
@@ -116,6 +117,8 @@ class OnPolicyCoDesignRunner:
             # fresh buffers for the first hardware iteration
             rewbuffer = deque(maxlen=maxbufferlength)
             lenbuffer = deque(maxlen=maxbufferlength)
+            windowed_attempt_buffer = deque(maxlen=maxbufferlength)  # 1=success, 0=non-success completion
+            self.env.unwrapped.windowed_attempt_buffer = windowed_attempt_buffer  # share with env for _get_dones updates
             best_mean_reward = -float("inf")
             historical_success_ratio = float(0)
             historical_attempt_count = float(0)
@@ -125,6 +128,9 @@ class OnPolicyCoDesignRunner:
                 rewbuffer = pickle.load(f)
             with open(lenbuffer_path, "rb") as f:
                 lenbuffer = pickle.load(f)
+            with open(windowed_attempt_buffer_path, "rb") as f:
+                windowed_attempt_buffer = pickle.load(f)
+            self.env.unwrapped.windowed_attempt_buffer = windowed_attempt_buffer  # share with env for _get_dones updates
             with open(reward_history_path, "r", encoding="utf-8") as f:
                 reward_history_dict = json.load(f)
             best_mean_reward = reward_history_dict.get("best_mean_reward", -float("inf"))
@@ -259,9 +265,11 @@ class OnPolicyCoDesignRunner:
 
                         if mean_rew > best_mean_reward:
                             best_mean_reward = mean_rew
+                            _windowed_sr = sum(windowed_attempt_buffer) / len(windowed_attempt_buffer) if len(windowed_attempt_buffer) > 0 else 0.0
                             self._log_best_model(
                                 it, hardware_iteration, mean_rew, params_dict,
-                                per_it_success_ratio, historical_success_ratio, best_model_path,
+                                per_it_success_ratio, historical_success_ratio,
+                                _windowed_sr, best_model_path,
                             )
 
                     # Save model
@@ -285,12 +293,16 @@ class OnPolicyCoDesignRunner:
 
         print(f"Logging Hardware Iteration {hardware_iteration} complete. Best mean reward: {best_mean_reward:.3f}")
 
+        # Compute windowed success ratio for logging
+        windowed_success_ratio = sum(windowed_attempt_buffer) / len(windowed_attempt_buffer) if len(windowed_attempt_buffer) > 0 else 0.0
+
         # Save the final model after training
         if self.log_dir is not None and not self.disable_logs:
             self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
         self._log_hardware_iteration_end(
             hardware_iteration, params_dict, rewbuffer, lenbuffer,
+            windowed_attempt_buffer,
             best_mean_reward, historical_success_ratio, historical_attempt_count,
             historical_success_count, per_it_rewbuffer, per_it_success_ratio,
         )
@@ -306,6 +318,7 @@ class OnPolicyCoDesignRunner:
         params_dict: dict,
         per_it_success_ratio: float,
         historical_success_ratio: float,
+        windowed_success_ratio: float,
         best_model_path: str,
     ) -> None:
         """Save the new best model checkpoint and log associated design parameters."""
@@ -330,6 +343,7 @@ class OnPolicyCoDesignRunner:
             "hardware_iteration": hardware_iteration,
             "per_it_success_ratio": per_it_success_ratio,
             "historical_success_ratio": historical_success_ratio,
+            "windowed_success_ratio": windowed_success_ratio,
             **params_dict,
         }
         best_log_json_path = os.path.join(self.log_dir, "best_policy_plus_design_params.json")
@@ -348,6 +362,7 @@ class OnPolicyCoDesignRunner:
         params_dict: dict,
         rewbuffer: deque,
         lenbuffer: deque,
+        windowed_attempt_buffer: deque,
         best_mean_reward: float,
         historical_success_ratio: float,
         historical_attempt_count: float,
@@ -356,6 +371,9 @@ class OnPolicyCoDesignRunner:
         per_it_success_ratio: float,
     ) -> None:
         """Serialise reward buffers, hardware parameters, and per-iteration history at the end of a hardware iteration."""
+        # Compute windowed success ratio
+        windowed_success_ratio = sum(windowed_attempt_buffer) / len(windowed_attempt_buffer) if len(windowed_attempt_buffer) > 0 else 0.0
+
         # ---- Accumulate hardware parameters into a single JSON file ----
         if per_iteration_hardware_parameters_path.exists():
             try:
@@ -383,6 +401,8 @@ class OnPolicyCoDesignRunner:
             pickle.dump(rewbuffer, f)
         with open(lenbuffer_path, "wb") as f:
             pickle.dump(lenbuffer, f)
+        with open(windowed_attempt_buffer_path, "wb") as f:
+            pickle.dump(windowed_attempt_buffer, f)
 
         # Persist cross-iteration reward summary
         reward_history_dict = {
@@ -411,6 +431,7 @@ class OnPolicyCoDesignRunner:
         per_it_history[f"{prefix}_mean_reward"] = float(per_it_mean_rew)
         per_it_history[f"{prefix}_success_ratio"] = float(per_it_final_success_ratio)
         per_it_history[f"{prefix}_historical_success_ratio"] = float(historical_success_ratio)
+        per_it_history[f"{prefix}_windowed_success_ratio"] = float(windowed_success_ratio)
         per_it_history[f"{prefix}_params"] = (
             f"z={params_dict['base_sphere_centre_z_offset']:.3f} "
             f"cd={params_dict['concave_dimple_diameter']:.3f} "
@@ -433,6 +454,8 @@ class OnPolicyCoDesignRunner:
             self.writer.add_scalar("Codesign/historical_success_ratio", float(historical_success_ratio), step)
             self.writer.add_scalar("Codesign/historical_attempt_count", float(historical_attempt_count), step)
             self.writer.add_scalar("Codesign/historical_success_count", float(historical_success_count), step)
+            # Log windowed success ratio
+            self.writer.add_scalar("Codesign/windowed_success_ratio", float(windowed_success_ratio), step)
             # Log each morphology parameter
             for param_name, param_val in params_dict.items():
                 self.writer.add_scalar(f"Codesign_Params/{param_name}", float(param_val), step)
@@ -469,7 +492,7 @@ class OnPolicyCoDesignRunner:
                     ep_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
                 else:
                     self.writer.add_scalar("Episode/" + key, value, locs["it"])
-                    ep_string += f"""{f"Mean episode {key}:":>{pad}} {value:.4f}\n"""
+                    ep_string += f"""{f"Mean {key}:":>{pad}} {value:.4f}\n"""
 
         mean_std = self.alg.policy.action_std.mean()
         fps = int(collection_size / (locs["collection_time"] + locs["learn_time"]))
@@ -525,6 +548,8 @@ class OnPolicyCoDesignRunner:
             log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(locs["rewbuffer"]):.2f}\n"""
             # Print episode information
             log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(locs["lenbuffer"]):.2f}\n"""
+            # Add header for logged metrics
+            log_string += f"""\n{'Mean values across this policy it:':>{pad}}\n"""
         else:
             log_string = (
                 f"""{"#" * width}\n"""
@@ -535,6 +560,8 @@ class OnPolicyCoDesignRunner:
             )
             for key, value in locs["loss_dict"].items():
                 log_string += f"""{f"{key}:":>{pad}} {value:.4f}\n"""
+            # Add header for logged metrics
+            log_string += f"""\n{'Mean values across this policy it:':>{pad}}\n"""
 
         log_string += ep_string
         log_string += (
