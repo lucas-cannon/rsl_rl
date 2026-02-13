@@ -106,7 +106,7 @@ class OnPolicyCoDesignRunner:
 
         # Book keeping
         ep_infos = []
-        maxbufferlength = 250
+        maxbufferlength = 1000 # 250
         cur_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration
         skip_iterations = 6  # number of iterations to skip from reward buffer after task reset (use this instead)
         per_it_success_ratio = 0.0  # track latest successes/attempts ratio for this hardware iteration
