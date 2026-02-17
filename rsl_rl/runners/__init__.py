@@ -7,5 +7,6 @@
 
 from .on_policy_runner import OnPolicyRunner  # noqa: I001
 from .distillation_runner import DistillationRunner
+from .extrinsics_distillation_runner import ExtrinsicsDistillationRunner
 
-__all__ = ["DistillationRunner", "OnPolicyRunner"]
+__all__ = ["DistillationRunner", "ExtrinsicsDistillationRunner", "OnPolicyRunner"]

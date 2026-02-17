@@ -9,6 +9,7 @@ from .cnn import CNN
 from .memory import HiddenState, Memory
 from .mlp import MLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
+from .proprio_adapt_t_conv import ProprioAdaptTConv
 
 __all__ = [
     "CNN",
@@ -17,4 +18,5 @@ __all__ = [
     "EmpiricalNormalization",
     "HiddenState",
     "Memory",
+    "ProprioAdaptTConv",
 ]

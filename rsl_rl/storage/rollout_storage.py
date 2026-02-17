@@ -19,6 +19,7 @@ class RolloutStorage:
             self.observations: TensorDict | None = None
             self.actions: torch.Tensor | None = None
             self.privileged_actions: torch.Tensor | None = None
+            self.privileged_latents: torch.Tensor | None = None
             self.rewards: torch.Tensor | None = None
             self.dones: torch.Tensor | None = None
             self.values: torch.Tensor | None = None
@@ -38,6 +39,7 @@ class RolloutStorage:
         obs: TensorDict,
         actions_shape: tuple[int] | list[int],
         device: str = "cpu",
+        extrinsics_output_dim: tuple[int] | list[int] | None = None,
     ) -> None:
         self.training_type = training_type
         self.device = device
@@ -59,14 +61,27 @@ class RolloutStorage:
         if training_type == "distillation":
             self.privileged_actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
 
+        # For extrinsics distillation
+        elif training_type == "extrinsics_distillation":
+            assert extrinsics_output_dim is not None
+            self.privileged_latents = torch.zeros(
+                num_transitions_per_env,
+                num_envs,
+                *extrinsics_output_dim,
+                device=self.device,
+            )
+
         # For reinforcement learning
-        if training_type == "rl":
+        elif training_type == "rl":
             self.values = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.mu = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
             self.sigma = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
             self.returns = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
             self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
+
+        else:
+            raise ValueError(f"Unknown training type: {training_type}. Supported types are: 'distillation', 'extrinsics_distillation' and 'rl'.")
 
         # For RNN networks
         self.saved_hidden_state_a = None
@@ -89,7 +104,8 @@ class RolloutStorage:
         # For distillation
         if self.training_type == "distillation":
             self.privileged_actions[self.step].copy_(transition.privileged_actions)
-
+        if self.training_type == "extrinsics_distillation":
+            self.privileged_latents[self.step].copy_(transition.privileged_latents)
         # For reinforcement learning
         if self.training_type == "rl":
             self.values[self.step].copy_(transition.values)
@@ -152,11 +168,26 @@ class RolloutStorage:
 
     # For distillation
     def generator(self) -> Generator:
-        if self.training_type != "distillation":
-            raise ValueError("This function is only available for distillation training.")
-
-        for i in range(self.num_transitions_per_env):
-            yield self.observations[i], self.actions[i], self.privileged_actions[i], self.dones[i]
+        if self.training_type == "distillation":
+            for i in range(self.num_transitions_per_env):
+                yield (
+                    self.observations[i],
+                    self.actions[i],
+                    self.privileged_actions[i],
+                    self.dones[i],
+                )
+        elif self.training_type == "extrinsics_distillation":
+            for i in range(self.num_transitions_per_env):
+                yield (
+                    self.observations[i],
+                    self.actions[i],  # optional
+                    self.privileged_latents[i],
+                    self.dones[i],
+                )
+        else:
+            raise ValueError(
+                "Generator only available for distillation or extrinsics_distillation"
+            )
 
     # For reinforcement learning with feedforward networks
     def mini_batch_generator(self, num_mini_batches: int, num_epochs: int = 8) -> Generator:

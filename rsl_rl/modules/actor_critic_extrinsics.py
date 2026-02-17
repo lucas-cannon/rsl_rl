@@ -143,3 +143,21 @@ class ActorCriticExtrinsics(ActorCritic):
         if self.critic_obs_normalization:
             critic_obs = self.get_critic_obs(obs)
             self.critic_obs_normalizer.update(critic_obs)
+
+    # -------------------------------------------------
+    # Recurrent compatibility (non-recurrent policy)
+    # -------------------------------------------------
+
+    def get_hidden_states(self):
+        # Non-recurrent model → no hidden states
+        return None, None
+
+
+    def detach_hidden_states(self, dones: torch.Tensor | None = None):
+        # Nothing to detach
+        pass
+
+
+    def reset(self, dones: torch.Tensor | None = None):
+        # Nothing to reset
+        pass
