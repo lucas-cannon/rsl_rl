@@ -108,7 +108,9 @@ class OnPolicyCoDesignRunner:
         ep_infos = []
         maxbufferlength = 1000 # 250
         cur_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration
-        skip_iterations = 6  # number of iterations to skip from reward buffer after task reset (use this instead)
+        skip_iterations = 8  # number of iterations to skip from reward buffer after task reset (use this instead)
+        cnn_skip_iterations = skip_iterations  # freeze CNN encoder for this many iterations after morphology change
+        cnn_frozen = False
         per_it_success_ratio = 0.0  # track latest successes/attempts ratio for this hardware iteration
         per_it_success_ratio_buffer = deque(maxlen=maxbufferlength)  # buffer for success ratio logging per hardware iteration
 
@@ -176,6 +178,19 @@ class OnPolicyCoDesignRunner:
 
         for it in range(start_iter, tot_iter + 1):
             current_iter = it - start_iter + 1
+
+            # Freeze CNN encoder during morphology transition to protect learned representations
+            if current_iter == 1 and not cnn_frozen:
+                self._set_cnn_requires_grad(False)
+                cnn_frozen = True
+                print(f"[CNN Freeze] Freezing CNN encoder for {cnn_skip_iterations} iterations after morphology change.")
+
+            # Unfreeze CNN encoder after skip iterations
+            if current_iter == cnn_skip_iterations + 1 and cnn_frozen:
+                self._set_cnn_requires_grad(True)
+                cnn_frozen = False
+                print(f"[CNN Freeze] Unfreezing CNN encoder at iteration {it}.")
+
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -239,46 +254,46 @@ class OnPolicyCoDesignRunner:
                 historical_success_ratio = float(historical_ratio_val)
                 historical_attempt_count = float(historical_attempt_val)
                 historical_success_count = float(historical_success_val)
+
+            # Update policy
+            loss_dict = self.alg.update()
+
+            stop = time.time()
+            learn_time = stop - start
+            self.current_learning_iteration = it
             
-            # Given that our hardware iterations are short (W.R.T. typical RL training), we ignore the first episode reward(s) after a task reset to avoid invalid/biased data due to environment reset.
-            if current_iter > skip_iterations:
+            # # Given that our hardware iterations are short (W.R.T. typical RL training), we ignore the first episode reward(s) after a task reset to avoid invalid/biased data due to environment reset.
+            # if current_iter > skip_iterations:
 
-                # Update policy
-                loss_dict = self.alg.update()
+            if self.log_dir is not None and not self.disable_logs:
 
-                stop = time.time()
-                learn_time = stop - start
-                self.current_learning_iteration = it
+                # Log information
+                self.log(locals())
 
-                if self.log_dir is not None and not self.disable_logs:
+                # -------- Save best model --------
+                # no best model in first hardware iteration to avoid noise before any
+                # complete episodes and ensure >1 episode is completed in the set.
+                # The iteration threshold is configurable via noisy_iter_threshold.
+                if hardware_iteration > 0 and len(rewbuffer) > 0 and it > noisy_iter_threshold:
+                    
+                    mean_rew = statistics.mean(rewbuffer)
 
-                    # Log information
-                    self.log(locals())
-
-                    # -------- Save best model --------
-                    # no best model in first hardware iteration to avoid noise before any
-                    # complete episodes and ensure >1 episode is completed in the set.
-                    # The iteration threshold is configurable via noisy_iter_threshold.
-                    if hardware_iteration > 0 and len(rewbuffer) > 0 and it > noisy_iter_threshold:
-                        
-                        mean_rew = statistics.mean(rewbuffer)
-
-                        if mean_rew > best_mean_reward:
-                            best_mean_reward = mean_rew
-                            _windowed_sr = sum(windowed_attempt_buffer) / len(windowed_attempt_buffer) if len(windowed_attempt_buffer) > 0 else 0.0
-                            self._log_best_model(
-                                it, hardware_iteration, mean_rew, params_dict,
-                                per_it_success_ratio, historical_success_ratio,
-                                _windowed_sr, best_model_path,
-                            )
+                    if mean_rew > best_mean_reward:
+                        best_mean_reward = mean_rew
+                        _windowed_sr = sum(windowed_attempt_buffer) / len(windowed_attempt_buffer) if len(windowed_attempt_buffer) > 0 else 0.0
+                        self._log_best_model(
+                            it, hardware_iteration, mean_rew, params_dict,
+                            per_it_success_ratio, historical_success_ratio,
+                            _windowed_sr, best_model_path,
+                        )
 
                     # Save model
                     if it % self.save_interval == 0:
                         self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
 
-            else:
-                print(f"Learning iteration: {it}/{tot_iter}\n Initial buffering phase before reaching stable reward data...")
-                self.alg.storage.clear()
+            # else:
+            #     print(f"Learning iteration: {it}/{tot_iter}\n Initial buffering phase before reaching stable reward data...")
+            #     self.alg.storage.clear()
 
             # Clear episode infos
             ep_infos.clear()
@@ -640,6 +655,20 @@ class OnPolicyCoDesignRunner:
         # RND
         if hasattr(self.alg, "rnd") and self.alg.rnd:
             self.alg.rnd.eval()
+
+    def _set_cnn_requires_grad(self, requires_grad: bool) -> None:
+        """Freeze or unfreeze CNN encoder parameters in the actor-critic policy.
+
+        This protects learned visual representations during the initial
+        buffering phase after a morphology change, where observations may
+        be noisy or misleading.
+        """
+        policy = self.alg.policy
+        for attr in ("actor_cnns", "critic_cnns"):
+            cnns = getattr(policy, attr, None)
+            if cnns is not None:
+                for param in cnns.parameters():
+                    param.requires_grad = requires_grad
 
     def add_git_repo_to_log(self, repo_file_path: str) -> None:
         self.git_status_repos.append(repo_file_path)
