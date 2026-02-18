@@ -106,10 +106,11 @@ class OnPolicyCoDesignRunner:
 
         # Book keeping
         ep_infos = []
-        maxbufferlength = 1000 # 250
-        cur_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration
-        skip_iterations = 8  # number of iterations to skip from reward buffer after task reset (use this instead)
-        cnn_skip_iterations = skip_iterations  # freeze CNN encoder for this many iterations after morphology change
+        maxbufferlength = 512
+        successwindowmaxbufferlength = 768
+        cnn_skip_iterations = 0  # freeze CNN encoder for this many iterations after morphology change
+        policy_warmup_iterations = 30  # number of iterations to warmup the policy after morphology change before logging rewards and allowing saves (to avoid noise from initial performance drop)
+        rew_skip_iterations = policy_warmup_iterations  # number of iterations to skip from reward buffer after task reset
         cnn_frozen = False
         per_it_success_ratio = 0.0  # track latest successes/attempts ratio for this hardware iteration
         per_it_success_ratio_buffer = deque(maxlen=maxbufferlength)  # buffer for success ratio logging per hardware iteration
@@ -119,7 +120,7 @@ class OnPolicyCoDesignRunner:
             # fresh buffers for the first hardware iteration
             rewbuffer = deque(maxlen=maxbufferlength)
             lenbuffer = deque(maxlen=maxbufferlength)
-            windowed_attempt_buffer = deque(maxlen=maxbufferlength)  # 1=success, 0=non-success completion
+            windowed_attempt_buffer = deque(maxlen=successwindowmaxbufferlength)  # 1=success, 0=non-success completion
             self.env.unwrapped.windowed_attempt_buffer = windowed_attempt_buffer  # share with env for _get_dones updates
             best_mean_reward = -float("inf")
             historical_success_ratio = float(0)
@@ -180,16 +181,17 @@ class OnPolicyCoDesignRunner:
             current_iter = it - start_iter + 1
 
             # Freeze CNN encoder during morphology transition to protect learned representations
-            if current_iter == 1 and not cnn_frozen:
-                self._set_cnn_requires_grad(False)
-                cnn_frozen = True
-                print(f"[CNN Freeze] Freezing CNN encoder for {cnn_skip_iterations} iterations after morphology change.")
+            if cnn_skip_iterations > 0 :
+                if current_iter == 1 and not cnn_frozen:
+                    self._set_cnn_requires_grad(False)
+                    cnn_frozen = True
+                    print(f"[CNN Freeze] Freezing CNN encoder for {cnn_skip_iterations} iterations after morphology change.")
 
-            # Unfreeze CNN encoder after skip iterations
-            if current_iter == cnn_skip_iterations + 1 and cnn_frozen:
-                self._set_cnn_requires_grad(True)
-                cnn_frozen = False
-                print(f"[CNN Freeze] Unfreezing CNN encoder at iteration {it}.")
+                # Unfreeze CNN encoder after skip iterations
+                if current_iter == cnn_skip_iterations + 1 and cnn_frozen:
+                    self._set_cnn_requires_grad(True)
+                    cnn_frozen = False
+                    print(f"[CNN Freeze] Unfreezing CNN encoder at iteration {it}.")
 
             start = time.time()
             # Rollout
@@ -222,11 +224,10 @@ class OnPolicyCoDesignRunner:
                         cur_episode_length += 1
                         # Clear data for completed episodes
                         new_ids = (dones > 0).nonzero(as_tuple=False)
-                        if current_iter > skip_iterations: # skip first data points from reward buffer after task reset
+                        if current_iter > rew_skip_iterations: # skip first data points from reward buffer after task reset
                             rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist()) # skip first data points
                             lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
                             per_it_rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                        cur_rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
                         if self.alg.rnd:
@@ -255,8 +256,9 @@ class OnPolicyCoDesignRunner:
                 historical_attempt_count = float(historical_attempt_val)
                 historical_success_count = float(historical_success_val)
 
-            # Update policy
-            loss_dict = self.alg.update()
+            if current_iter > policy_warmup_iterations: # skip logging rewards and saving models until after policy warmup iterations to avoid noise from initial performance drop after morphology change
+                # Update policy
+                loss_dict = self.alg.update()
 
             stop = time.time()
             learn_time = stop - start
@@ -265,7 +267,7 @@ class OnPolicyCoDesignRunner:
             # # Given that our hardware iterations are short (W.R.T. typical RL training), we ignore the first episode reward(s) after a task reset to avoid invalid/biased data due to environment reset.
             # if current_iter > skip_iterations:
 
-            if self.log_dir is not None and not self.disable_logs:
+            if self.log_dir is not None and not self.disable_logs and current_iter > policy_warmup_iterations: # skip logging rewards and saving models until after policy warmup iterations to avoid noise from initial performance drop after morphology change
 
                 # Log information
                 self.log(locals())
@@ -291,9 +293,9 @@ class OnPolicyCoDesignRunner:
                     if it % self.save_interval == 0:
                         self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
 
-            # else:
-            #     print(f"Learning iteration: {it}/{tot_iter}\n Initial buffering phase before reaching stable reward data...")
-            #     self.alg.storage.clear()
+            else:
+                print(f"Learning iteration: {it}/{tot_iter}\n Initial buffering phase before reaching stable reward data...")
+                self.alg.storage.clear()
 
             # Clear episode infos
             ep_infos.clear()
