@@ -1,3 +1,4 @@
+from ipdb import set_trace
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
@@ -111,9 +112,9 @@ class ExtrinsicsDistillation:
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         self.transition.actions = self.policy.act(obs).detach()
+        # self.transition.actions = self.policy.act_inference(obs).detach()
         # store teacher extrinsics as "privileged actions"
-        self.transition.privileged_latents = \
-            self.policy.get_teacher_extrinsics(obs).detach()
+        self.transition.privileged_latents = self.policy.get_teacher_extrinsics(obs).detach()
         self.transition.observations = obs
 
         return self.transition.actions
@@ -157,12 +158,6 @@ class ExtrinsicsDistillation:
                     student_z,
                     teacher_z.detach(),
                 )
-
-                # TODO: try with and without normalization
-                # teacher_z = teacher_z.detach()
-                # teacher_z = (teacher_z - teacher_z.mean(0)) / (teacher_z.std(0) + 1e-6)
-                # student_z = (student_z - student_z.mean(0)) / (student_z.std(0) + 1e-6)
-                # loss = mse(student_z, teacher_z)
 
                 loss = loss + behavior_loss
                 mean_loss += behavior_loss.item()

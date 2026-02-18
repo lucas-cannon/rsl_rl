@@ -190,7 +190,6 @@ class ActorCritic(nn.Module):
             False -> student-only checkpoint (actor loaded, critic missing)
         """
         keys = list(state_dict.keys())
-
         #######################################################################
         # CASE 1 — Distillation student checkpoint (student.*, student_cnns.*)
         #######################################################################

@@ -31,13 +31,14 @@ class StudentTeacherExtrinsics(nn.Module):
         teacher_extrinsics_hidden_dims=(256, 128),
         init_noise_std: float = 0.1,
         noise_std_type: str = "scalar",
+        # teacher_tanh_extrinsics: bool = False,
     ):
         super().__init__()
 
         self.obs_groups = obs_groups
         self.loaded_teacher = False
         self.extrinsics_output_dim = extrinsics_output_dim
-
+        # self.use_student_extrinsics_for_rollout = True
         # -----------------------------
         # Priv dims (teacher)
         # -----------------------------
@@ -56,8 +57,8 @@ class StudentTeacherExtrinsics(nn.Module):
             extrinsics_output_dim,
             teacher_extrinsics_hidden_dims,
             activation,
+            # last_activation="tanh" if teacher_tanh_extrinsics else None,
         )
-
         self.student_extrinsics_encoder = ProprioAdaptTConv(
             proprio_input_dim=proprio_input_dim,
             history_len=history_len,
@@ -148,7 +149,13 @@ class StudentTeacherExtrinsics(nn.Module):
         return self.student_extrinsics_encoder(hist)
 
     def get_actor_obs(self, obs: TensorDict):
+        # if self.use_student_extrinsics_for_rollout:
+        #     extrinsics_vec = self.get_student_extrinsics(obs)
+        # else:
+        #     extrinsics_vec = self.get_teacher_extrinsics(obs)
+        #     print("testing using teacher extrinsics...")
         extrinsics_vec = self.get_student_extrinsics(obs)
+        # print("s2:", extrinsics_vec.min().item(), extrinsics_vec.max().item())
         obs_vec = torch.cat([obs[k] for k in self.obs_groups["obs"]], dim=-1)
         return obs_vec, extrinsics_vec
 
@@ -213,7 +220,7 @@ class StudentTeacherExtrinsics(nn.Module):
 
     def detach_hidden_states(self, dones: torch.Tensor | None = None) -> None:
         pass
-    
+        
     def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
         """
         Returns:
@@ -222,6 +229,7 @@ class StudentTeacherExtrinsics(nn.Module):
         """
 
         keys = list(state_dict.keys())
+
         # CASE 1 — Stage-2 checkpoint (student exists)
         if any(k.startswith("student_extrinsics_encoder.") for k in keys):
 
@@ -234,22 +242,52 @@ class StudentTeacherExtrinsics(nn.Module):
 
             teacher_sd = {}
             actor_sd = {}
+            actor_norm_sd = {}
+            priv_norm_sd = {}
 
             for k, v in state_dict.items():
+
+                # ---------------- Teacher ----------------
                 if k.startswith("teacher_extrinsics_encoder."):
                     teacher_sd[k.replace("teacher_extrinsics_encoder.", "")] = v
+                    continue
+
+                # ---------------- Actor ----------------
                 if k.startswith("actor."):
                     actor_sd[k.replace("actor.", "")] = v
+                    continue
+
+                # ---------------- Actor obs normalizer ----------------
+                if k.startswith("actor_obs_normalizer."):
+                    actor_norm_sd[k.replace("actor_obs_normalizer.", "")] = v
+                    continue
+
+                # ---------------- Priv normalizer ----------------
+                if k.startswith("priv_obs_normalizer."):
+                    priv_norm_sd[k.replace("priv_obs_normalizer.", "")] = v
+                    continue
+
+                # ---------------- Noise ----------------
                 if k in ("std", "log_std"):
                     setattr(self, k, nn.Parameter(v.clone()))
 
+            # Load weights
             self.teacher_extrinsics_encoder.load_state_dict(teacher_sd, strict=False)
             self.actor.load_state_dict(actor_sd, strict=False)
+
+            # Load normalizers
+            if isinstance(self.obs_normalizer, EmpiricalNormalization) and len(actor_norm_sd) > 0:
+                self.obs_normalizer.load_state_dict(actor_norm_sd, strict=False)
+
+            if isinstance(self.priv_normalizer, EmpiricalNormalization) and len(priv_norm_sd) > 0:
+                self.priv_normalizer.load_state_dict(priv_norm_sd, strict=False)
+
             self.teacher_extrinsics_encoder.eval()
             self.actor.eval()
 
             self.loaded_teacher = True
             return False
 
+        # Unknown checkpoint
         else:
             raise ValueError("Unrecognized checkpoint format")

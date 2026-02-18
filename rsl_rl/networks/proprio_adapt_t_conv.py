@@ -1,49 +1,63 @@
 import torch
 import torch.nn as nn
+from ipdb import set_trace
 
 class ProprioAdaptTConv(nn.Module):
     def __init__(
         self,
-        proprio_input_dim: int,
-        history_len: int,
-        extrinsics_output_dim: int,
+        proprio_input_dim: int,     # e.g. 92
+        history_len: int,           # e.g. 30
+        extrinsics_output_dim: int, # e.g. 8
     ):
         super().__init__()
 
-        # input expected shape: (B, T, D)
-        # e.g. (4096, 50, 32)
+        hidden_units = proprio_input_dim  # match original RMA width
 
+        # Channel transform (per time step)
         self.channel_transform = nn.Sequential(
-            nn.Linear(proprio_input_dim, 32),
+            nn.Linear(proprio_input_dim, hidden_units),
             nn.ReLU(inplace=True),
-            nn.Linear(32, 32),
+            nn.Linear(hidden_units, hidden_units),
             nn.ReLU(inplace=True),
         )
 
+        # Temporal aggregation (Conv over time)
         self.temporal_aggregation = nn.Sequential(
-            nn.Conv1d(32, 32, kernel_size=9, stride=2),
+            nn.Conv1d(hidden_units, hidden_units, kernel_size=9, stride=2),
             nn.ReLU(inplace=True),
-            nn.Conv1d(32, 32, kernel_size=5, stride=1),
+            nn.Conv1d(hidden_units, hidden_units, kernel_size=5, stride=1),
             nn.ReLU(inplace=True),
-            nn.Conv1d(32, 32, kernel_size=5, stride=1),
+            nn.Conv1d(hidden_units, hidden_units, kernel_size=5, stride=1),
             nn.ReLU(inplace=True),
         )
 
-        # compute final temporal size dynamically
-        dummy = torch.zeros(1, history_len, proprio_input_dim)
+        # Dynamically compute final temporal dimension
         with torch.no_grad():
-            d = self.channel_transform(dummy)
-            d = d.permute(0, 2, 1)
-            d = self.temporal_aggregation(d)
-            final_dim = d.shape[-1]
+            dummy = torch.zeros(1, history_len, proprio_input_dim)
+            d = self.channel_transform(dummy)      # (1, T, H)
+            d = d.permute(0, 2, 1)                # (1, H, T)
+            d = self.temporal_aggregation(d)      # (1, H, T')
+            final_temporal_dim = d.shape[-1]
 
-        self.low_dim_proj = nn.Linear(32 * final_dim, extrinsics_output_dim)
+        # Projection to low-dim extrinsics latent
+        self.low_dim_proj = nn.Linear(
+            hidden_units * final_temporal_dim,
+            extrinsics_output_dim,
+        )
 
-    def forward(self, x):
-        # x: (B, T, D)
-        x = self.channel_transform(x)          # (B, T, 32)
-        x = x.permute(0, 2, 1)                # (B, 32, T)
-        x = self.temporal_aggregation(x)      # (B, 32, T')
-        x = x.flatten(1)
-        x = self.low_dim_proj(x)
-        return torch.tanh(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (B, T, D)
+           B = batch size
+           T = history length
+           D = proprio_input_dim
+        """
+
+        x = self.channel_transform(x)        # (B, T, H)
+        x = x.permute(0, 2, 1)              # (B, H, T)
+        x = self.temporal_aggregation(x)    # (B, H, T')
+        x = x.flatten(1)                    # (B, H*T')
+        x = self.low_dim_proj(x)            # (B, extrinsics_output_dim)
+
+        # return torch.tanh(x)                # match RMA design
+        return x                # match RMA design
