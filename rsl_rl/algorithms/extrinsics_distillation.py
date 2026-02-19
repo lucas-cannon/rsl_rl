@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from tensordict import TensorDict
 
-from rsl_rl.modules import StudentTeacherExtrinsics
+from rsl_rl.modules import StudentTeacherExtrinsics, StudentTeacherMultiModalExtrinsics
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import resolve_optimizer
 
@@ -16,11 +16,11 @@ class ExtrinsicsDistillation:
     teacher_extrinsics_encoder outputs.
     """
 
-    policy: StudentTeacherExtrinsics
+    policy: StudentTeacherExtrinsics | StudentTeacherMultiModalExtrinsics
 
     def __init__(
         self,
-        policy: StudentTeacherExtrinsics,
+        policy: StudentTeacherExtrinsics | StudentTeacherMultiModalExtrinsics,
         num_learning_epochs: int = 1,
         gradient_length: int = 15,
         learning_rate: float = 1e-3,
@@ -112,7 +112,6 @@ class ExtrinsicsDistillation:
 
     def act(self, obs: TensorDict) -> torch.Tensor:
         self.transition.actions = self.policy.act(obs).detach()
-        # self.transition.actions = self.policy.act_inference(obs).detach()
         # store teacher extrinsics as "privileged actions"
         self.transition.privileged_latents = self.policy.get_teacher_extrinsics(obs).detach()
         self.transition.observations = obs

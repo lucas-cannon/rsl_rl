@@ -25,7 +25,7 @@ class ActorCriticExtrinsics(ActorCritic):
         actor_hidden_dims=(512, 256, 128),
         critic_hidden_dims=(512, 256, 128),
         activation="elu",
-        # last_activation=None,
+        last_activation=None,
         init_noise_std=1.0,
         noise_std_type="scalar",
         state_dependent_std=False,
@@ -61,7 +61,7 @@ class ActorCriticExtrinsics(ActorCritic):
             extrinsics_output_dims,
             extrinsics_hidden_dims,
             activation,
-            # last_activation
+            last_activation
         )
         print(f"Teacher extrinsics encoder: {self.teacher_extrinsics_encoder}")
 

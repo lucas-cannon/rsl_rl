@@ -1,3 +1,4 @@
+
 # Copyright (c) 2021-2025, ETH Zurich and NVIDIA CORPORATION
 # All rights reserved.
 #
@@ -10,10 +11,10 @@ import torch.nn as nn
 from tensordict import TensorDict
 from torch.distributions import Normal
 from typing import Any, NoReturn
-from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState, ProprioAdaptTConv
+from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState, ProprioAdaptTConv, CNN, MultimodalAdaptTConv
 from ipdb import set_trace
 
-class StudentTeacherExtrinsics(nn.Module):
+class StudentTeacherMultiModalExtrinsics(nn.Module):
     is_recurrent: bool = False
 
     def __init__(
@@ -26,57 +27,59 @@ class StudentTeacherExtrinsics(nn.Module):
         actor_obs_normalization: bool = False,
         priv_obs_normalization: bool = False,
         student_1d_obs_normalization: bool = False,
-        activation="elu",
+        activation: str = "elu",
         actor_hidden_dims=(256, 128),
         teacher_extrinsics_hidden_dims=(256, 128),
         init_noise_std: float = 0.1,
         noise_std_type: str = "scalar",
-        # teacher_tanh_extrinsics: bool = False,
+        student_cnn_cfg: dict | None = None,
     ):
         super().__init__()
 
         self.obs_groups = obs_groups
         self.loaded_teacher = False
         self.extrinsics_output_dim = extrinsics_output_dim
-        # self.use_student_extrinsics_for_rollout = True
-        # -----------------------------
-        # Priv dims (teacher)
-        # -----------------------------
+        self.history_len = history_len
+
         priv_dim = sum(obs[k].shape[-1] for k in obs_groups["priv"])
         obs_dim = sum(obs[k].shape[-1] for k in obs_groups["obs"])
-        
-        obs_hist_key = obs_groups["obs_hist"][0]
-        hist_shape = obs[obs_hist_key].shape  # (B, T, D)
 
-        assert len(hist_shape) == 3, \
-            f"Expected temporal proprio shape (B, T, D), got {hist_shape}"
+        self.hist_keys = obs_groups["obs_hist"]
+        self.hist_1d_keys = []
+        self.hist_2d_keys = []
+        hist_1d_dim = 0
 
-        assert hist_shape[1] == history_len, \
-            f"History length mismatch: expected {history_len}, got {hist_shape[1]}"
+        for k in self.hist_keys:
+            if len(obs[k].shape) == 3:
+                self.hist_1d_keys.append(k)
+                hist_1d_dim += obs[k].shape[-1]
+            elif len(obs[k].shape) == 5:
+                self.hist_2d_keys.append(k)
+            else:
+                raise ValueError(f"Unsupported obs_hist shape for key {k}: {obs[k].shape}")
 
-        proprio_input_dim = hist_shape[2]
-
+        for k in self.hist_1d_keys:
+            assert obs[k].shape[1] == history_len, \
+                f"{k} history length mismatch: expected {history_len}, got {obs[k].shape[1]}"
 
         self.teacher_extrinsics_encoder = MLP(
             priv_dim,
             extrinsics_output_dim,
             teacher_extrinsics_hidden_dims,
             activation,
-            # last_activation="tanh" if teacher_tanh_extrinsics else None,
-        )
-        self.student_extrinsics_encoder = ProprioAdaptTConv(
-            proprio_input_dim=proprio_input_dim,
-            history_len=history_len,
-            extrinsics_output_dim=extrinsics_output_dim,
         )
 
-        # Freeze teacher
+        self.student_extrinsics_encoder = MultimodalAdaptTConv(
+            obs=obs,
+            obs_hist_keys=self.hist_keys,
+            history_len=history_len,
+            extrinsics_output_dim=extrinsics_output_dim,
+            cnn_cfg=student_cnn_cfg,
+        )
+
         self.teacher_extrinsics_encoder.eval()
         for p in self.teacher_extrinsics_encoder.parameters():
             p.requires_grad = False
-
-        self.history_len = history_len
-        self.proprio_input_dim = proprio_input_dim
 
         actor_input_dim = obs_dim + extrinsics_output_dim
 
@@ -87,44 +90,39 @@ class StudentTeacherExtrinsics(nn.Module):
             activation,
         )
 
-        # -------------------------------------------------
-        # Freeze teacher + actor
-        # -------------------------------------------------
-        self.teacher_extrinsics_encoder.eval()
-        for p in self.teacher_extrinsics_encoder.parameters():
-            p.requires_grad = False
-
         self.actor.eval()
         for p in self.actor.parameters():
             p.requires_grad = False
 
-        # normalization
         if actor_obs_normalization:
             self.obs_normalizer = EmpiricalNormalization(obs_dim)
         else:
             self.obs_normalizer = nn.Identity()
+
         if priv_obs_normalization:
             self.priv_normalizer = EmpiricalNormalization(priv_dim)
         else:
             self.priv_normalizer = nn.Identity()
-        if student_1d_obs_normalization:
-            self.obs_hist_normalizer = EmpiricalNormalization(
-                history_len * proprio_input_dim
-            )
-        else:
-            self.obs_hist_normalizer = nn.Identity()
 
-        # Action noise (for rollout)
+        if student_1d_obs_normalization and hist_1d_dim > 0:
+            self.student_1d_obs_normalizer = EmpiricalNormalization(hist_1d_dim)
+        else:
+            self.student_1d_obs_normalizer = nn.Identity()
+
         self.noise_std_type = noise_std_type
         if self.noise_std_type == "scalar":
             self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         elif self.noise_std_type == "log":
             self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
         else:
-            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+            raise ValueError(
+                f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
+            )
 
         self.distribution = None
         Normal.set_default_validate_args(False)
+
+
 
     def reset(
         self, dones: torch.Tensor | None = None, hidden_states: tuple[HiddenState, HiddenState] = (None, None)
@@ -147,28 +145,39 @@ class StudentTeacherExtrinsics(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def get_student_extrinsics(self, obs: TensorDict) -> torch.Tensor:
-        hist = torch.cat(
-            [obs[k] for k in self.obs_groups["obs_hist"]],
-            dim=-1,
-        )  # (B, T, D_total)
+        hist_inputs = {}
+        # -------- 1D history streams --------
+        hist_1d_list = []
+        for k in self.student_extrinsics_encoder.hist_1d_keys:
+            hist_1d_list.append(obs[k])  # (B, T, D)
 
-        if isinstance(self.obs_hist_normalizer, EmpiricalNormalization):
-            B, T, D = hist.shape
-            hist_flat = hist.reshape(B, T * D)
-            hist_flat = self.obs_hist_normalizer(hist_flat)
-            hist = hist_flat.view(B, T, D)
+        if len(hist_1d_list) > 0:
+            hist_1d = torch.cat(hist_1d_list, dim=-1)  # (B, T, D_total)
 
-        return self.student_extrinsics_encoder(hist)
+            B, T, D = hist_1d.shape
+            hist_1d_reshaped = hist_1d.reshape(B * T, D)
+            hist_1d_norm = self.student_1d_obs_normalizer(hist_1d_reshaped)
+            hist_1d = hist_1d_norm.reshape(B, T, D)
+            
+            start = 0
+            for k in self.student_extrinsics_encoder.hist_1d_keys:
+                d = obs[k].shape[-1]
+                hist_inputs[k] = hist_1d[:, :, start:start + d]
+                start += d
+        # -------- 2D history streams --------
+        for k in self.student_extrinsics_encoder.hist_2d_keys:
+            hist_inputs[k] = obs[k]  # (B, T, C, H, W)
+
+        return self.student_extrinsics_encoder(hist_inputs)
 
     def get_actor_obs(self, obs: TensorDict):
-        # if self.use_student_extrinsics_for_rollout:
-        #     extrinsics_vec = self.get_student_extrinsics(obs)
-        # else:
-        #     extrinsics_vec = self.get_teacher_extrinsics(obs)
-        #     print("testing using teacher extrinsics...")
+
         extrinsics_vec = self.get_student_extrinsics(obs)
-        # print("s2:", extrinsics_vec.min().item(), extrinsics_vec.max().item())
-        obs_vec = torch.cat([obs[k] for k in self.obs_groups["obs"]], dim=-1)
+        obs_vec = torch.cat(
+            [obs[k] for k in self.obs_groups["obs"]],
+            dim=-1,
+        )
+
         return obs_vec, extrinsics_vec
 
     def act(self, obs: TensorDict, **kwargs) -> torch.Tensor:
@@ -183,22 +192,31 @@ class StudentTeacherExtrinsics(nn.Module):
         mlp_obs = torch.cat([obs_vec, extrinsics_vec], dim=-1)
         return self.actor(mlp_obs)
 
-    def _update_distribution(self, obs_vec: torch.Tensor, extrinsics_vec: torch.Tensor) -> None:
+    def _update_distribution(
+        self,
+        obs_vec: torch.Tensor,
+        extrinsics_vec: torch.Tensor,
+    ) -> None:
         mlp_obs = torch.cat([obs_vec, extrinsics_vec], dim=-1)
         mean = self.actor(mlp_obs)
+
         if self.noise_std_type == "scalar":
             std = self.std.expand_as(mean)
         elif self.noise_std_type == "log":
             std = torch.exp(self.log_std).expand_as(mean)
         else:
             raise ValueError("Unknown noise_std_type")
+
         self.distribution = Normal(mean, std)
 
     def evaluate(self, obs: TensorDict) -> torch.Tensor:
         return self.get_teacher_extrinsics(obs)
 
     def get_teacher_extrinsics(self, obs: TensorDict) -> torch.Tensor:
-        priv = torch.cat([obs[k] for k in self.obs_groups["priv"]], dim=-1)
+        priv = torch.cat(
+            [obs[k] for k in self.obs_groups["priv"]],
+            dim=-1,
+        )
         priv = self.priv_normalizer(priv)
 
         with torch.no_grad():
@@ -220,15 +238,16 @@ class StudentTeacherExtrinsics(nn.Module):
             )
             self.priv_normalizer.update(priv)
 
-        if isinstance(self.obs_hist_normalizer, EmpiricalNormalization):
-            hist = torch.cat(
-                [obs[k] for k in self.obs_groups["obs_hist"]],
-                dim=-1,
-            )  # (B, T, D)
+        if isinstance(self.student_1d_obs_normalizer, EmpiricalNormalization):
+            hist_1d_list = []
+            for k in self.student_extrinsics_encoder.hist_1d_keys:
+                hist_1d_list.append(obs[k])
 
-            B, T, D = hist.shape
-            hist_flat = hist.reshape(B, T * D)
-            self.obs_hist_normalizer.update(hist_flat)
+            if len(hist_1d_list) > 0:
+                hist_1d = torch.cat(hist_1d_list, dim=-1)  # (B, T, D_total)
+                B, T, D = hist_1d.shape
+                hist_1d_bt = hist_1d.reshape(B * T, D)
+                self.student_1d_obs_normalizer.update(hist_1d_bt)
 
     def get_hidden_states(self) -> tuple[HiddenState, HiddenState]:
         return None, None

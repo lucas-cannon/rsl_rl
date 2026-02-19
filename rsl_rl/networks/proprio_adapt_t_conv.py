@@ -22,14 +22,27 @@ class ProprioAdaptTConv(nn.Module):
         )
 
         # Temporal aggregation (Conv over time)
-        self.temporal_aggregation = nn.Sequential(
-            nn.Conv1d(hidden_units, hidden_units, kernel_size=9, stride=2),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(hidden_units, hidden_units, kernel_size=5, stride=1),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(hidden_units, hidden_units, kernel_size=5, stride=1),
-            nn.ReLU(inplace=True),
-        )
+        # self.temporal_aggregation = nn.Sequential(
+        #     nn.Conv1d(hidden_units, hidden_units, kernel_size=9, stride=2),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv1d(hidden_units, hidden_units, kernel_size=5, stride=1),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv1d(hidden_units, hidden_units, kernel_size=5, stride=1),
+        #     nn.ReLU(inplace=True),
+        # )
+
+        if history_len <= 1:
+            self.temporal_aggregation = nn.Identity()
+            final_temporal_dim = 1
+        else:
+            self.temporal_aggregation = nn.Sequential(
+                nn.Conv1d(hidden_units, hidden_units, kernel_size=3, stride=1, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(hidden_units, hidden_units, kernel_size=3, stride=1, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(hidden_units, hidden_units, kernel_size=3, stride=1, padding=1),
+                nn.ReLU(inplace=True),
+            )
 
         # Dynamically compute final temporal dimension
         with torch.no_grad():
@@ -59,5 +72,5 @@ class ProprioAdaptTConv(nn.Module):
         x = x.flatten(1)                    # (B, H*T')
         x = self.low_dim_proj(x)            # (B, extrinsics_output_dim)
 
-        # return torch.tanh(x)                # match RMA design
-        return x                # match RMA design
+        return torch.tanh(x)                # match RMA design
+        # return x                # match RMA design

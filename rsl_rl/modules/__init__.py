@@ -15,6 +15,7 @@ from .student_teacher_recurrent import StudentTeacherRecurrent
 from .student_teacher_cnn import StudentTeacherCNN
 from .student_teacher_cnn_rnn import StudentTeacherCNNRNN
 from .student_teacher_extrinsics import StudentTeacherExtrinsics
+from .student_teacher_multimodal_extrinsics import StudentTeacherMultiModalExtrinsics
 from .symmetry import resolve_symmetry_config
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "StudentTeacherCNN",
     "StudentTeacherCNNRNN",
     "StudentTeacherExtrinsics",
+    "StudentTeacherMultiModalExtrinsics",
     "resolve_rnd_config",
     "resolve_symmetry_config",
 ]

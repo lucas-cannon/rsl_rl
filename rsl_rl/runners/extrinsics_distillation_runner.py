@@ -9,7 +9,7 @@ import rsl_rl
 from rsl_rl.env import VecEnv
 from rsl_rl.utils import resolve_obs_groups, store_code_state
 from rsl_rl.algorithms import ExtrinsicsDistillation
-from rsl_rl.modules import StudentTeacherExtrinsics
+from rsl_rl.modules import StudentTeacherExtrinsics, StudentTeacherMultiModalExtrinsics
 from rsl_rl.runners import OnPolicyRunner
 
 
@@ -38,7 +38,7 @@ class ExtrinsicsDistillationRunner(OnPolicyRunner):
         self.cfg["obs_groups"] = resolve_obs_groups(
             obs,
             self.cfg["obs_groups"],
-            default_sets=["priv", "obs", "proprio_hist"]
+            default_sets=["priv", "obs", "obs_hist"]
         )
 
         # Construct algorithm
@@ -138,7 +138,7 @@ class ExtrinsicsDistillationRunner(OnPolicyRunner):
                 if "extrinsics_mse" in loss_dict:
 
                     bc_loss = float(loss_dict["extrinsics_mse"])
-                    if it > 200:   # avoid noise before any complete episodes
+                    if it > 100:   # avoid noise before any complete episodes
                         if bc_loss < best_bc_loss:
                             best_bc_loss = bc_loss
                             print(
@@ -153,7 +153,7 @@ class ExtrinsicsDistillationRunner(OnPolicyRunner):
 
                 # ========== PPO mode: track reward ==========
                 else:
-                    if it > 200:  # avoid noise in early iterations
+                    if it > 100:  # avoid noise in early iterations
                         mean_rew = statistics.mean(rewbuffer)
 
                         if mean_rew > best_mean_reward:
