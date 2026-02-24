@@ -34,7 +34,7 @@ class ProprioAdaptTConv(nn.Module):
         if history_len <= 1:
             self.temporal_aggregation = nn.Identity()
             final_temporal_dim = 1
-        else:
+        elif history_len <= 10:
             self.temporal_aggregation = nn.Sequential(
                 nn.Conv1d(hidden_units, hidden_units, kernel_size=3, stride=1, padding=1),
                 nn.ReLU(inplace=True),
@@ -43,6 +43,27 @@ class ProprioAdaptTConv(nn.Module):
                 nn.Conv1d(hidden_units, hidden_units, kernel_size=3, stride=1, padding=1),
                 nn.ReLU(inplace=True),
             )
+        elif history_len == 15:
+            self.temporal_aggregation = nn.Sequential(
+                nn.Conv1d(hidden_units, hidden_units, kernel_size=5, stride=2),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(hidden_units, hidden_units, kernel_size=3, stride=1),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(hidden_units, hidden_units, kernel_size=3, stride=1),
+                nn.ReLU(inplace=True),
+            )
+        elif history_len == 30:
+            self.temporal_aggregation = nn.Sequential(
+                nn.Conv1d(hidden_units, hidden_units, kernel_size=9, stride=2),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(hidden_units, hidden_units, kernel_size=5, stride=1),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(hidden_units, hidden_units, kernel_size=5, stride=1),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            raise ValueError(f"Unsupported history_len {history_len}. Supported: <=1, <=10, 30.")
+
 
         # Dynamically compute final temporal dimension
         with torch.no_grad():
