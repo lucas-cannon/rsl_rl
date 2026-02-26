@@ -107,7 +107,7 @@ class OnPolicyCoDesignRunner:
         # Book keeping
         ep_infos = []
         maxbufferlength = 512
-        successwindowmaxbufferlength = 768
+        successwindowmaxbufferlength = 2048 # 768 512
         cnn_skip_iterations = 0  # freeze CNN encoder for this many iterations after morphology change
         policy_warmup_iterations = 30  # number of iterations to warmup the policy after morphology change before logging rewards and allowing saves (to avoid noise from initial performance drop)
         rew_skip_iterations = policy_warmup_iterations  # number of iterations to skip from reward buffer after task reset
