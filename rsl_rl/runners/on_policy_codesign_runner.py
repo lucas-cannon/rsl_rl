@@ -106,14 +106,15 @@ class OnPolicyCoDesignRunner:
 
         # Book keeping
         ep_infos = []
-        maxbufferlength = 512
-        successwindowmaxbufferlength = 2048 # 768 512
+        maxbufferlength = 256 #512
+        successwindowmaxbufferlength = 1024 #2048 # 768 512
+        per_it_bufferlength = 2048
         cnn_skip_iterations = 0  # freeze CNN encoder for this many iterations after morphology change
-        policy_warmup_iterations = 30  # number of iterations to warmup the policy after morphology change before logging rewards and allowing saves (to avoid noise from initial performance drop)
+        policy_warmup_iterations = 20  # number of iterations to warmup the policy after morphology change before logging rewards and allowing saves (to avoid noise from initial performance drop)
         rew_skip_iterations = policy_warmup_iterations  # number of iterations to skip from reward buffer after task reset
         cnn_frozen = False
         per_it_success_ratio = 0.0  # track latest successes/attempts ratio for this hardware iteration
-        per_it_success_ratio_buffer = deque(maxlen=maxbufferlength)  # buffer for success ratio logging per hardware iteration
+        per_it_success_ratio_buffer = deque(maxlen=per_it_bufferlength)  # buffer for success ratio logging per hardware iteration
 
         # load reward and length buffers from previous hardware iterations
         if hardware_iteration == 0:
@@ -138,7 +139,8 @@ class OnPolicyCoDesignRunner:
                 reward_history_dict = json.load(f)
             best_mean_reward = reward_history_dict.get("best_mean_reward", -float("inf"))
 
-        per_it_rewbuffer = deque(maxlen=maxbufferlength)  # buffer for current hardware iteration for per-iteration logging
+        per_it_rewbuffer = deque(maxlen=per_it_bufferlength)  # buffer for current hardware iteration for per-iteration logging
+        per_it_best_mean_reward = -float("inf")  # best rolling mean reward within this hardware iteration (for HEBO observation)
 
         # -------- Load current hardware design parameters --------
         with open(params_path, "r", encoding="utf-8") as f:
@@ -272,6 +274,12 @@ class OnPolicyCoDesignRunner:
                 # Log information
                 self.log(locals())
 
+                # -------- Track per-hardware-iteration best mean reward (for HEBO) --------
+                if len(rewbuffer) > 0:
+                    _cur_mean_rew = statistics.mean(rewbuffer)
+                    if _cur_mean_rew > per_it_best_mean_reward:
+                        per_it_best_mean_reward = _cur_mean_rew
+
                 # -------- Save best model --------
                 # no best model in first hardware iteration to avoid noise before any
                 # complete episodes and ensure >1 episode is completed in the set.
@@ -308,7 +316,7 @@ class OnPolicyCoDesignRunner:
                     for path in git_file_paths:
                         self.writer.save_file(path)
 
-        print(f"Logging Hardware Iteration {hardware_iteration} complete. Best mean reward: {best_mean_reward:.3f}")
+        print(f"Logging Hardware Iteration {hardware_iteration} complete. Best mean reward: {best_mean_reward:.3f}. Best per-iteration mean reward: {per_it_best_mean_reward:.3f}")
 
         # Compute windowed success ratio for logging
         windowed_success_ratio = sum(windowed_attempt_buffer) / len(windowed_attempt_buffer) if len(windowed_attempt_buffer) > 0 else 0.0
@@ -322,6 +330,7 @@ class OnPolicyCoDesignRunner:
             windowed_attempt_buffer,
             best_mean_reward, historical_success_ratio, historical_attempt_count,
             historical_success_count, per_it_rewbuffer, per_it_success_ratio,
+            per_it_best_mean_reward,
         )
 
 
@@ -386,6 +395,7 @@ class OnPolicyCoDesignRunner:
         historical_success_count: float,
         per_it_rewbuffer: deque,
         per_it_success_ratio: float,
+        per_it_best_mean_reward: float = -float("inf"),
     ) -> None:
         """Serialise reward buffers, hardware parameters, and per-iteration history at the end of a hardware iteration."""
         # Compute windowed success ratio
@@ -446,6 +456,7 @@ class OnPolicyCoDesignRunner:
 
         prefix = f"hardware_iteration_{hardware_iteration}"
         per_it_history[f"{prefix}_mean_reward"] = float(per_it_mean_rew)
+        per_it_history[f"{prefix}_best_mean_reward"] = float(per_it_best_mean_reward)
         per_it_history[f"{prefix}_success_ratio"] = float(per_it_final_success_ratio)
         per_it_history[f"{prefix}_historical_success_ratio"] = float(historical_success_ratio)
         per_it_history[f"{prefix}_windowed_success_ratio"] = float(windowed_success_ratio)
@@ -466,6 +477,7 @@ class OnPolicyCoDesignRunner:
         if self.writer is not None:
             step = hardware_iteration
             self.writer.add_scalar("Codesign/mean_reward", float(per_it_mean_rew), step)
+            self.writer.add_scalar("Codesign/per_it_best_mean_reward", float(per_it_best_mean_reward), step)
             self.writer.add_scalar("Codesign/best_mean_reward", float(best_mean_reward), step)
             self.writer.add_scalar("Codesign/success_ratio", float(per_it_final_success_ratio), step)
             self.writer.add_scalar("Codesign/historical_success_ratio", float(historical_success_ratio), step)
