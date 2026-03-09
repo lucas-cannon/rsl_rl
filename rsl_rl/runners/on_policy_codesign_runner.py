@@ -284,7 +284,7 @@ class OnPolicyCoDesignRunner:
                 # no best model in first hardware iteration to avoid noise before any
                 # complete episodes and ensure >1 episode is completed in the set.
                 # The iteration threshold is configurable via noisy_iter_threshold.
-                if hardware_iteration > 0 and len(rewbuffer) > 0 and it > noisy_iter_threshold:
+                if len(rewbuffer) > 0 and it > noisy_iter_threshold: # and hardware_iteration > 0 
                     
                     mean_rew = statistics.mean(rewbuffer)
 
@@ -303,6 +303,7 @@ class OnPolicyCoDesignRunner:
 
             else:
                 print(f"Learning iteration: {it}/{tot_iter}\n Initial buffering phase before reaching stable reward data...")
+                print(f"Collection time: {collection_time:.2f}s, Learn time: {learn_time:.2f}s")
                 self.alg.storage.clear()
 
             # Clear episode infos
