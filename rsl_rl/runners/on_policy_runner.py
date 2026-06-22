@@ -165,7 +165,7 @@ class OnPolicyRunner:
                 # Log information
                 self.log(locals())
                 # -------- Save best model --------
-                if it > 200:   # avoid noise before any complete episodes
+                if it > 0:   # avoid noise before any complete episodes
                     
                     mean_rew = statistics.mean(rewbuffer)
 
