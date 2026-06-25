@@ -84,6 +84,10 @@ class OnPolicyRunner:
         ep_infos = []
         rewbuffer = deque(maxlen=100)
         lenbuffer = deque(maxlen=100)
+        # Per-completed-episode success flag (1.0 if the episode TERMINATED — reached the goal —
+        # rather than timing out). The env terminates only on reached_goal, so success =
+        # done & not time_out. Logged as Train/success_rate (mean over the last 100 episodes).
+        successbuffer = deque(maxlen=100)
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         # --- Best policy tracking ---
@@ -139,6 +143,15 @@ class OnPolicyRunner:
                         new_ids = (dones > 0).nonzero(as_tuple=False)
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                        # Success = ended by TERMINATION (goal), not time-out. dones marks every
+                        # ending; extras["time_outs"] marks the truncations, so their complement
+                        # among dones is the goal-reached successes (the env's only termination).
+                        if "time_outs" in extras:
+                            time_outs = extras["time_outs"].to(self.device)
+                            success = (dones > 0) & (time_outs <= 0)
+                        else:
+                            success = torch.zeros_like(dones, dtype=torch.bool)
+                        successbuffer.extend(success[new_ids][:, 0].float().cpu().numpy().tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
                         if self.alg.rnd:
@@ -165,7 +178,7 @@ class OnPolicyRunner:
                 # Log information
                 self.log(locals())
                 # -------- Save best model --------
-                if it > 0:   # avoid noise before any complete episodes
+                if it > 50:   # avoid noise before any complete episodes
                     
                     mean_rew = statistics.mean(rewbuffer)
 
@@ -256,6 +269,18 @@ class OnPolicyRunner:
             # Everything else
             self.writer.add_scalar("Train/mean_reward", statistics.mean(locs["rewbuffer"]), locs["it"])
             self.writer.add_scalar("Train/mean_episode_length", statistics.mean(locs["lenbuffer"]), locs["it"])
+            # Fraction of the last 100 completed episodes that reached the goal (vs timed out).
+            if len(locs["successbuffer"]) > 0:
+                self.writer.add_scalar("Train/success_rate", statistics.mean(locs["successbuffer"]), locs["it"])
+            # Episode length in seconds (= mean_episode_length * env step_dt). Computed here
+            # over rsl_rl's full lenbuffer (last 100 episodes) so it's a stable curve; an
+            # env-side per-reset metric instead sees only the env-group resetting on the last
+            # rollout step (~1-2 episodes), which swings wildly around the true mean.
+            step_dt = getattr(self.env.unwrapped, "step_dt", None)
+            if step_dt is not None:
+                self.writer.add_scalar(
+                    "Train/mean_episode_time", statistics.mean(locs["lenbuffer"]) * step_dt, locs["it"]
+                )
             if self.logger_type != "wandb":  # wandb does not support non-integer x-axis logging
                 self.writer.add_scalar("Train/mean_reward/time", statistics.mean(locs["rewbuffer"]), self.tot_time)
                 self.writer.add_scalar(
@@ -284,6 +309,8 @@ class OnPolicyRunner:
             log_string += f"""{"Mean reward:":>{pad}} {statistics.mean(locs["rewbuffer"]):.2f}\n"""
             # Print episode information
             log_string += f"""{"Mean episode length:":>{pad}} {statistics.mean(locs["lenbuffer"]):.2f}\n"""
+            if len(locs["successbuffer"]) > 0:
+                log_string += f"""{"Success rate:":>{pad}} {statistics.mean(locs["successbuffer"]):.2%}\n"""
         else:
             log_string = (
                 f"""{"#" * width}\n"""
