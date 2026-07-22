@@ -21,8 +21,9 @@ class WandbSummaryWriter(SummaryWriter):
     def __init__(self, log_dir: str, flush_secs: int, cfg: dict) -> None:
         super().__init__(log_dir, flush_secs)
 
-        # Get the run name
-        run_name = os.path.split(log_dir)[-1]
+        # Prefer the configured run name. This stays descriptive when callers
+        # deliberately use a stable artifact directory such as ``attempt_001``.
+        run_name = cfg.get("run_name") or os.path.split(log_dir)[-1]
 
         try:
             project = cfg["wandb_project"]

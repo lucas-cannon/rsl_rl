@@ -11,6 +11,8 @@ import time
 import torch
 import warnings
 from collections import deque
+from collections.abc import Callable
+from typing import Any
 from tensordict import TensorDict
 
 import rsl_rl
@@ -64,9 +66,26 @@ class OnPolicyRunner:
         self.tot_timesteps = 0
         self.tot_time = 0
         self.current_learning_iteration = 0
+        self.last_iteration_metrics: dict[str, Any] | None = None
         self.git_status_repos = [rsl_rl.__file__]
 
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
+    def learn(
+        self,
+        num_learning_iterations: int,
+        init_at_random_ep_len: bool = False,
+        iteration_callback: Callable[[dict[str, Any]], bool | None] | None = None,
+    ) -> None:
+        """Train for at most ``num_learning_iterations`` iterations.
+
+        ``iteration_callback`` is invoked after each completed/logged iteration
+        with the runner's rolling episode statistics and policy diagnostics.  A
+        truthy return requests a clean early stop.  Keeping the callback inside
+        one ``learn`` call is important: the rolling 100-episode buffers and the
+        best-policy tracker remain continuous for the whole run.
+
+        The argument is optional and therefore backwards compatible with the
+        ordinary fixed-length RSL-RL training path.
+        """
         # Initialize writer
         self._prepare_logging_writer()
 
@@ -110,6 +129,7 @@ class OnPolicyRunner:
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
+            completed_episodes_this_iteration = 0
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -141,6 +161,7 @@ class OnPolicyRunner:
                         cur_episode_length += 1
                         # Clear data for completed episodes
                         new_ids = (dones > 0).nonzero(as_tuple=False)
+                        completed_episodes_this_iteration += int(new_ids.shape[0])
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
                         # Success = ended by TERMINATION (goal), not time-out. dones marks every
@@ -178,8 +199,7 @@ class OnPolicyRunner:
                 # Log information
                 self.log(locals())
                 # -------- Save best model --------
-                if it > 50:   # avoid noise before any complete episodes
-                    
+                if rewbuffer:
                     mean_rew = statistics.mean(rewbuffer)
 
                     if mean_rew > best_mean_reward:
@@ -197,6 +217,30 @@ class OnPolicyRunner:
                 if it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
 
+            mean_reward = statistics.mean(rewbuffer) if rewbuffer else None
+            mean_episode_length = statistics.mean(lenbuffer) if lenbuffer else None
+            success_rate = statistics.mean(successbuffer) if successbuffer else None
+            mean_noise_std = float(self.alg.policy.action_std.mean().detach().cpu())
+            policy_entropy = float(self.alg.policy.entropy.mean().detach().cpu())
+            callback_metrics = {
+                "iteration": it,
+                "mean_reward": mean_reward,
+                "best_mean_reward": (
+                    None if best_mean_reward == -float("inf") else best_mean_reward
+                ),
+                "mean_episode_length": mean_episode_length,
+                "success_rate": success_rate,
+                "completed_episodes": completed_episodes_this_iteration,
+                "policy_mean_noise_std": mean_noise_std,
+                "policy_entropy": policy_entropy,
+            }
+            self.last_iteration_metrics = callback_metrics
+            stop_requested = bool(
+                iteration_callback(callback_metrics)
+                if iteration_callback is not None
+                else False
+            )
+
             # Clear episode infos
             ep_infos.clear()
             # Save code state
@@ -207,6 +251,9 @@ class OnPolicyRunner:
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
+
+            if stop_requested:
+                break
 
         # Save the final model after training
         if self.log_dir is not None and not self.disable_logs:
