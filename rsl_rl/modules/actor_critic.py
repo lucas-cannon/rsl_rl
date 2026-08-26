@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tensordict import TensorDict
 from torch.distributions import Normal
 from typing import Any, NoReturn
@@ -30,6 +31,7 @@ class ActorCritic(nn.Module):
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         state_dependent_std: bool = False,
+        action_distribution: str = "normal",
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
@@ -76,6 +78,12 @@ class ActorCritic(nn.Module):
             self.critic_obs_normalizer = torch.nn.Identity()
 
         # Action noise
+        if action_distribution not in {"normal", "tanh_normal"}:
+            raise ValueError(
+                "action_distribution must be 'normal' or 'tanh_normal', got "
+                f"{action_distribution!r}."
+            )
+        self.action_distribution = action_distribution
         self.noise_std_type = noise_std_type
         if self.state_dependent_std:
             torch.nn.init.zeros_(self.actor[-2].weight[num_actions:])
@@ -98,6 +106,9 @@ class ActorCritic(nn.Module):
         # Action distribution
         # Note: Populated in update_distribution
         self.distribution = None
+        self._entropy = None
+        self._latent_action = None
+        self._sampled_action = None
 
         # Disable args validation for speedup
         Normal.set_default_validate_args(False)
@@ -117,8 +128,49 @@ class ActorCritic(nn.Module):
         return self.distribution.stddev
 
     @property
+    def deterministic_action(self) -> torch.Tensor:
+        """Bounded action selected by deterministic inference for the current observations."""
+        return self._squash_action(self.distribution.mean)
+
+    @property
+    def latent_action(self) -> torch.Tensor:
+        """Last sampled pre-transform action, for saturation diagnostics."""
+        if self._latent_action is None:
+            raise RuntimeError("act() must be called before reading the latent action.")
+        return self._latent_action
+
+    @property
     def entropy(self) -> torch.Tensor:
+        if self.action_distribution == "tanh_normal":
+            if self._entropy is None:
+                raise RuntimeError("act() must be called before reading squashed-policy entropy.")
+            return self._entropy
         return self.distribution.entropy().sum(dim=-1)
+
+    @staticmethod
+    def _tanh_log_abs_det_jacobian(latent_action: torch.Tensor) -> torch.Tensor:
+        """Stable ``log(1 - tanh(x)^2)`` used by the transformed density."""
+        log_two = torch.log(torch.tensor(2.0, device=latent_action.device))
+        return 2.0 * (log_two - latent_action - F.softplus(-2.0 * latent_action))
+
+    def _sample_action(self) -> torch.Tensor:
+        if self.action_distribution == "normal":
+            self._entropy = None
+            self._latent_action = self.distribution.sample()
+            self._sampled_action = self._latent_action
+            return self._sampled_action
+        latent_action = self.distribution.rsample()
+        self._latent_action = latent_action
+        log_det = self._tanh_log_abs_det_jacobian(latent_action)
+        # Reparameterized Monte-Carlo estimate of the transformed entropy.
+        self._entropy = -(self.distribution.log_prob(latent_action) - log_det).sum(dim=-1)
+        self._sampled_action = torch.tanh(latent_action)
+        return self._sampled_action
+
+    def _squash_action(self, latent_action: torch.Tensor) -> torch.Tensor:
+        if self.action_distribution == "tanh_normal":
+            return torch.tanh(latent_action)
+        return latent_action
 
     def _update_distribution(self, obs: torch.Tensor) -> None:
         if self.state_dependent_std:
@@ -148,16 +200,17 @@ class ActorCritic(nn.Module):
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
         self._update_distribution(obs)
-        return self.distribution.sample()
+        return self._sample_action()
 
     def act_inference(self, obs: TensorDict) -> torch.Tensor:
         obs = self.get_actor_obs(obs)
         obs = self.actor_obs_normalizer(obs)
         # set_trace()
         if self.state_dependent_std:
-            return self.actor(obs)[..., 0, :]
+            latent_action = self.actor(obs)[..., 0, :]
         else:
-            return self.actor(obs)
+            latent_action = self.actor(obs)
+        return self._squash_action(latent_action)
 
     def evaluate(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         obs = self.get_critic_obs(obs)
@@ -173,7 +226,18 @@ class ActorCritic(nn.Module):
         return torch.cat(obs_list, dim=-1)
 
     def get_actions_log_prob(self, actions: torch.Tensor) -> torch.Tensor:
-        return self.distribution.log_prob(actions).sum(dim=-1)
+        if self.action_distribution == "normal":
+            return self.distribution.log_prob(actions).sum(dim=-1)
+        if actions is self._sampled_action:
+            log_det = self._tanh_log_abs_det_jacobian(self._latent_action)
+            return (self.distribution.log_prob(self._latent_action) - log_det).sum(dim=-1)
+        # atanh is undefined at +/-1. Saturated float values are mapped to the
+        # nearest representable interior value for a finite, consistent density.
+        eps = torch.finfo(actions.dtype).eps
+        bounded_actions = actions.clamp(min=-1.0 + eps, max=1.0 - eps)
+        latent_actions = torch.atanh(bounded_actions)
+        log_det = self._tanh_log_abs_det_jacobian(latent_actions)
+        return (self.distribution.log_prob(latent_actions) - log_det).sum(dim=-1)
 
     def update_normalization(self, obs: TensorDict) -> None:
         if self.actor_obs_normalization:
@@ -239,4 +303,3 @@ class ActorCritic(nn.Module):
         # CASE 4 — Unrecognized checkpoint
         #######################################################################
         raise RuntimeError("Unrecognized checkpoint format. Keys: " + str(keys[:20]))
-

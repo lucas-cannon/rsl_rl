@@ -32,6 +32,7 @@ class ActorCriticCNN(ActorCritic):
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         state_dependent_std: bool = False,
+        action_distribution: str = "normal",
         **kwargs: dict[str, Any],
     ) -> None:
         if kwargs:
@@ -168,6 +169,12 @@ class ActorCriticCNN(ActorCritic):
             self.critic_obs_normalizer = torch.nn.Identity()
 
         # Action noise
+        if action_distribution not in {"normal", "tanh_normal"}:
+            raise ValueError(
+                "action_distribution must be 'normal' or 'tanh_normal', got "
+                f"{action_distribution!r}."
+            )
+        self.action_distribution = action_distribution
         self.noise_std_type = noise_std_type
         if self.state_dependent_std:
             torch.nn.init.zeros_(self.actor[-2].weight[num_actions:])
@@ -190,6 +197,9 @@ class ActorCriticCNN(ActorCritic):
         # Action distribution
         # Note: Populated in update_distribution
         self.distribution = None
+        self._entropy = None
+        self._latent_action = None
+        self._sampled_action = None
 
         # Disable args validation for speedup
         Normal.set_default_validate_args(False)
@@ -208,7 +218,7 @@ class ActorCriticCNN(ActorCritic):
         mlp_obs, cnn_obs = self.get_actor_obs(obs)
         mlp_obs = self.actor_obs_normalizer(mlp_obs)
         self._update_distribution(mlp_obs, cnn_obs)
-        return self.distribution.sample()
+        return self._sample_action()
 
     def act_inference(self, obs: TensorDict) -> torch.Tensor:
         mlp_obs, cnn_obs = self.get_actor_obs(obs)
@@ -222,9 +232,10 @@ class ActorCriticCNN(ActorCritic):
             mlp_obs = torch.cat([mlp_obs, cnn_enc], dim=-1)
         # set_trace()
         if self.state_dependent_std:
-            return self.actor(mlp_obs)[..., 0, :]
+            latent_action = self.actor(mlp_obs)[..., 0, :]
         else:
-            return self.actor(mlp_obs)
+            latent_action = self.actor(mlp_obs)
+        return self._squash_action(latent_action)
 
     def evaluate(self, obs: TensorDict, **kwargs: dict[str, Any]) -> torch.Tensor:
         mlp_obs, cnn_obs = self.get_critic_obs(obs)

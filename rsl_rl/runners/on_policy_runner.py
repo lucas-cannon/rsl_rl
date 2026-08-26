@@ -130,12 +130,34 @@ class OnPolicyRunner:
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
             completed_episodes_this_iteration = 0
+            action_near_bound_count = torch.zeros((), device=self.device)
+            latent_action_out_of_bounds_count = torch.zeros((), device=self.device)
+            action_out_of_bounds_count = torch.zeros((), device=self.device)
+            deterministic_action_near_bound_count = torch.zeros((), device=self.device)
+            stochastic_deterministic_squared_error = torch.zeros((), device=self.device)
+            action_element_count = 0
             start = time.time()
             # Rollout
             with torch.inference_mode():
                 for _ in range(self.num_steps_per_env):
                     # Sample actions
                     actions = self.alg.act(obs)
+                    deterministic_actions = getattr(
+                        self.alg.policy,
+                        "deterministic_action",
+                        getattr(self.alg.policy, "action_mean", actions),
+                    )
+                    latent_actions = getattr(self.alg.policy, "latent_action", actions)
+                    action_near_bound_count += (actions.abs() >= 0.95).sum()
+                    latent_action_out_of_bounds_count += (latent_actions.abs() > 1.0).sum()
+                    action_out_of_bounds_count += (actions.abs() > 1.0).sum()
+                    deterministic_action_near_bound_count += (
+                        deterministic_actions.abs() >= 0.95
+                    ).sum()
+                    stochastic_deterministic_squared_error += (
+                        actions - deterministic_actions
+                    ).square().sum()
+                    action_element_count += actions.numel()
                     # Step the environment
                     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
                     # Move to device
@@ -222,6 +244,29 @@ class OnPolicyRunner:
             success_rate = statistics.mean(successbuffer) if successbuffer else None
             mean_noise_std = float(self.alg.policy.action_std.mean().detach().cpu())
             policy_entropy = float(self.alg.policy.entropy.mean().detach().cpu())
+            policy_entropy_per_action = policy_entropy / actions.shape[-1]
+            action_near_bound_fraction = float(
+                (action_near_bound_count / action_element_count).detach().cpu()
+            )
+            action_out_of_bounds_fraction = float(
+                (action_out_of_bounds_count / action_element_count).detach().cpu()
+            )
+            latent_action_out_of_bounds_fraction = float(
+                (latent_action_out_of_bounds_count / action_element_count).detach().cpu()
+            )
+            deterministic_action_near_bound_fraction = float(
+                (deterministic_action_near_bound_count / action_element_count).detach().cpu()
+            )
+            stochastic_deterministic_action_rmse = float(
+                torch.sqrt(stochastic_deterministic_squared_error / action_element_count)
+                .detach()
+                .cpu()
+            )
+            total_time = float(getattr(self, "tot_time", 0.0))
+            total_timesteps = int(getattr(self, "tot_timesteps", 0))
+            samples_per_second = (
+                total_timesteps / total_time if total_time > 0.0 else 0.0
+            )
             callback_metrics = {
                 "iteration": it,
                 "mean_reward": mean_reward,
@@ -233,6 +278,19 @@ class OnPolicyRunner:
                 "completed_episodes": completed_episodes_this_iteration,
                 "policy_mean_noise_std": mean_noise_std,
                 "policy_entropy": policy_entropy,
+                "policy_entropy_per_action": policy_entropy_per_action,
+                "action_near_bound_fraction": action_near_bound_fraction,
+                "action_out_of_bounds_fraction": action_out_of_bounds_fraction,
+                "latent_action_out_of_bounds_fraction": latent_action_out_of_bounds_fraction,
+                "deterministic_action_near_bound_fraction": deterministic_action_near_bound_fraction,
+                "stochastic_deterministic_action_rmse": stochastic_deterministic_action_rmse,
+                "collection_time": collection_time,
+                "learning_time": learn_time,
+                "iteration_time": collection_time + learn_time,
+                "environment_steps": total_timesteps,
+                "samples_per_second": samples_per_second,
+                # Backward-compatible name used by RSL-RL and existing W&B runs.
+                "total_fps": samples_per_second,
             }
             self.last_iteration_metrics = callback_metrics
             stop_requested = bool(
@@ -297,6 +355,32 @@ class OnPolicyRunner:
 
         # Log noise std
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
+        action_count = locs["action_element_count"]
+        self.writer.add_scalar(
+            "Policy/action_near_bound_fraction",
+            (locs["action_near_bound_count"] / action_count).item(),
+            locs["it"],
+        )
+        self.writer.add_scalar(
+            "Policy/action_out_of_bounds_fraction",
+            (locs["action_out_of_bounds_count"] / action_count).item(),
+            locs["it"],
+        )
+        self.writer.add_scalar(
+            "Policy/latent_action_out_of_bounds_fraction",
+            (locs["latent_action_out_of_bounds_count"] / action_count).item(),
+            locs["it"],
+        )
+        self.writer.add_scalar(
+            "Policy/deterministic_action_near_bound_fraction",
+            (locs["deterministic_action_near_bound_count"] / action_count).item(),
+            locs["it"],
+        )
+        self.writer.add_scalar(
+            "Policy/stochastic_deterministic_action_rmse",
+            torch.sqrt(locs["stochastic_deterministic_squared_error"] / action_count).item(),
+            locs["it"],
+        )
 
         # Log performance
         self.writer.add_scalar("Perf/total_fps", fps, locs["it"])

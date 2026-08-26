@@ -40,6 +40,7 @@ class PPO:
         desired_kl: float = 0.01,
         device: str = "cpu",
         normalize_advantage_per_mini_batch: bool = False,
+        normalize_entropy_by_action_dim: bool = False,
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters
@@ -121,6 +122,7 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.normalize_entropy_by_action_dim = normalize_entropy_by_action_dim
 
     def init_storage(
         self,
@@ -144,9 +146,10 @@ class PPO:
         if self.policy.is_recurrent:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # Compute the actions and values
-        self.transition.actions = self.policy.act(obs).detach()
+        actions = self.policy.act(obs)
+        self.transition.actions_log_prob = self.policy.get_actions_log_prob(actions).detach()
+        self.transition.actions = actions.detach()
         self.transition.values = self.policy.evaluate(obs).detach()
-        self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.policy.action_mean.detach()
         self.transition.action_sigma = self.policy.action_std.detach()
         # Record observations before env.step()
@@ -195,6 +198,7 @@ class PPO:
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_entropy = 0
+        mean_entropy_per_action = 0
         # RND loss
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
@@ -254,6 +258,12 @@ class PPO:
             mu_batch = self.policy.action_mean[:original_batch_size]
             sigma_batch = self.policy.action_std[:original_batch_size]
             entropy_batch = self.policy.entropy[:original_batch_size]
+            entropy_per_action_batch = entropy_batch / actions_batch.shape[-1]
+            entropy_objective_batch = (
+                entropy_per_action_batch
+                if self.normalize_entropy_by_action_dim
+                else entropy_batch
+            )
 
             # Compute KL divergence and adapt the learning rate
             if self.desired_kl is not None and self.schedule == "adaptive":
@@ -310,7 +320,11 @@ class PPO:
             else:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
-            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+            loss = (
+                surrogate_loss
+                + self.value_loss_coef * value_loss
+                - self.entropy_coef * entropy_objective_batch.mean()
+            )
 
             # Symmetry loss
             if self.symmetry:
@@ -383,6 +397,7 @@ class PPO:
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
+            mean_entropy_per_action += entropy_per_action_batch.mean().item()
             # RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
@@ -395,6 +410,7 @@ class PPO:
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
+        mean_entropy_per_action /= num_updates
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
         if mean_symmetry_loss is not None:
@@ -408,6 +424,7 @@ class PPO:
             "value_function": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
+            "entropy_per_action": mean_entropy_per_action,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
