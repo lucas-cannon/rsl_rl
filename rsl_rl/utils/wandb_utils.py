@@ -9,6 +9,8 @@ import os
 from dataclasses import asdict
 from torch.utils.tensorboard import SummaryWriter
 
+from .wandb_environment import resolve_wandb_entity
+
 try:
     import wandb
 except ModuleNotFoundError:
@@ -30,10 +32,7 @@ class WandbSummaryWriter(SummaryWriter):
         except KeyError:
             raise KeyError("Please specify wandb_project in the runner config, e.g. legged_gym.") from None
 
-        try:
-            entity = os.environ["WANDB_USERNAME"]
-        except KeyError:
-            entity = None
+        entity = resolve_wandb_entity()
 
         # Initialize wandb
         wandb.init(project=project, entity=entity, name=run_name)
