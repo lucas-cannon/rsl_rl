@@ -13,7 +13,6 @@ from torch.distributions import Normal
 from typing import Any, NoReturn
 
 from rsl_rl.networks import MLP, EmpiricalNormalization
-from ipdb import set_trace
 
 class ActorCritic(nn.Module):
     is_recurrent: bool = False

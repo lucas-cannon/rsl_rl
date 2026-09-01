@@ -49,7 +49,14 @@ class _Environment:
             torch.zeros(1, 1),
             torch.tensor([float(self.step_index)]),
             torch.tensor([True]),
-            {"time_outs": torch.tensor([False])},
+            {
+                "time_outs": torch.tensor([False]),
+                "log": {
+                    "episode_reward/progress": torch.tensor(
+                        [float(self.step_index) * 10.0]
+                    )
+                },
+            },
         )
 
 
@@ -90,6 +97,10 @@ class IterationCallbackTests(unittest.TestCase):
                 [row["mean_reward"] for row in metrics], [1.0, 1.5, 2.0]
             )
             self.assertEqual(metrics[-1]["best_mean_reward"], 2.0)
+            self.assertEqual(
+                [row["episode_reward/progress"] for row in metrics],
+                [10.0, 20.0, 30.0],
+            )
             self.assertEqual(runner.current_learning_iteration, 2)
             self.assertEqual(
                 sum(Path(path).name == "best_model.pt" for path in saved), 3

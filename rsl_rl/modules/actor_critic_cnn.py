@@ -14,7 +14,6 @@ from typing import Any
 from rsl_rl.networks import CNN, MLP, EmpiricalNormalization
 
 from .actor_critic import ActorCritic
-from ipdb import set_trace
 
 class ActorCriticCNN(ActorCritic):
     def __init__(

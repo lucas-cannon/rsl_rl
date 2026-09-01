@@ -18,7 +18,6 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import StudentTeacher, StudentTeacherRecurrent, StudentTeacherCNN, StudentTeacherCNNRNN
 from rsl_rl.runners import OnPolicyRunner
 from rsl_rl.utils import resolve_obs_groups, store_code_state
-from ipdb import set_trace
 
 class DistillationRunner(OnPolicyRunner):
     """On-policy runner for training and evaluation of teacher-student training."""

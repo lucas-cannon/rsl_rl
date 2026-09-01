@@ -11,7 +11,6 @@ from tensordict import TensorDict
 from torch.distributions import Normal
 from typing import Any, NoReturn
 from rsl_rl.networks import CNN, MLP, EmpiricalNormalization, HiddenState
-from ipdb import set_trace
 
 class StudentTeacherCNN(nn.Module):
     is_recurrent: bool = False

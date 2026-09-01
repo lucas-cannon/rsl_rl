@@ -7,7 +7,6 @@ from rsl_rl.networks import MLP, EmpiricalNormalization
 from torch import nn
 from torch.distributions import Normal
 from .actor_critic import ActorCritic
-from ipdb import set_trace
 
 class ActorCriticExtrinsics(ActorCritic):
     is_recurrent: bool = False

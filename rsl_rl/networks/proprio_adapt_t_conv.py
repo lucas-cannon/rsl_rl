@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from ipdb import set_trace
 
 class ProprioAdaptTConv(nn.Module):
     def __init__(

@@ -267,6 +267,22 @@ class OnPolicyRunner:
             samples_per_second = (
                 total_timesteps / total_time if total_time > 0.0 else 0.0
             )
+            episode_metrics = {}
+            if ep_infos:
+                for key in ep_infos[0]:
+                    values = []
+                    for ep_info in ep_infos:
+                        if key not in ep_info:
+                            continue
+                        value = ep_info[key]
+                        if not isinstance(value, torch.Tensor):
+                            value = torch.as_tensor(value, device=self.device)
+                        values.append(value.reshape(-1).float())
+                    if values:
+                        tag = key if "/" in key else f"Episode/{key}"
+                        episode_metrics[tag] = float(
+                            torch.cat(values).mean().detach().cpu()
+                        )
             callback_metrics = {
                 "iteration": it,
                 "mean_reward": mean_reward,
@@ -291,6 +307,7 @@ class OnPolicyRunner:
                 "samples_per_second": samples_per_second,
                 # Backward-compatible name used by RSL-RL and existing W&B runs.
                 "total_fps": samples_per_second,
+                **episode_metrics,
             }
             self.last_iteration_metrics = callback_metrics
             stop_requested = bool(
