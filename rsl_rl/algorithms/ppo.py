@@ -199,6 +199,9 @@ class PPO:
         mean_surrogate_loss = 0
         mean_entropy = 0
         mean_entropy_per_action = 0
+        mean_grad_norm_total = 0.0
+        mean_grad_norm_actor = 0.0
+        mean_grad_norm_critic = 0.0
         # RND loss
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
@@ -387,7 +390,25 @@ class PPO:
                 self.reduce_parameters()
 
             # Apply the gradients for PPO
-            nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            # Critic modules include recurrent memory and observation encoders; the
+            # remaining policy parameters (including action noise) belong to the actor.
+            critic_grads = [
+                param.grad for name, param in self.policy.named_parameters()
+                if (name.startswith("critic") or name.startswith("memory_c")) and param.grad is not None
+            ]
+            actor_grads = [
+                param.grad for name, param in self.policy.named_parameters()
+                if not (name.startswith("critic") or name.startswith("memory_c")) and param.grad is not None
+            ]
+            mean_grad_norm_actor += torch.linalg.vector_norm(
+                torch.stack([torch.linalg.vector_norm(grad) for grad in actor_grads])
+            ).item()
+            mean_grad_norm_critic += torch.linalg.vector_norm(
+                torch.stack([torch.linalg.vector_norm(grad) for grad in critic_grads])
+            ).item()
+            mean_grad_norm_total += nn.utils.clip_grad_norm_(
+                self.policy.parameters(), self.max_grad_norm
+            ).item()
             self.optimizer.step()
             # Apply the gradients for RND
             if self.rnd_optimizer:
@@ -411,6 +432,9 @@ class PPO:
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
         mean_entropy_per_action /= num_updates
+        mean_grad_norm_total /= num_updates
+        mean_grad_norm_actor /= num_updates
+        mean_grad_norm_critic /= num_updates
         if mean_rnd_loss is not None:
             mean_rnd_loss /= num_updates
         if mean_symmetry_loss is not None:
@@ -425,6 +449,9 @@ class PPO:
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
             "entropy_per_action": mean_entropy_per_action,
+            "grad_norm_total": mean_grad_norm_total,
+            "grad_norm_actor": mean_grad_norm_actor,
+            "grad_norm_critic": mean_grad_norm_critic,
         }
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss

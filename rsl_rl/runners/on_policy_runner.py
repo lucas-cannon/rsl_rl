@@ -308,6 +308,7 @@ class OnPolicyRunner:
                 # Backward-compatible name used by RSL-RL and existing W&B runs.
                 "total_fps": samples_per_second,
                 **episode_metrics,
+                **{f"Loss/{key}": value for key, value in loss_dict.items() if key.startswith("grad_norm_")},
             }
             self.last_iteration_metrics = callback_metrics
             stop_requested = bool(
